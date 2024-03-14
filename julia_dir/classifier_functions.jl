@@ -18,6 +18,7 @@ module ClassifierFunctions
     using BenchmarkTools
     using DataStructures
     using Plots
+    using Pkg
     using LsqFit
     using PyCall
     using LaTeXStrings
@@ -140,7 +141,8 @@ function fit_sn_hg(pure_sn_spectra, pure_hg_spectra, sn_info, hg_info, sn_file_n
         max_target_spec_index = argmax(target_spectra)
         max_target_spec = maximum(target_spectra)
     
-        for (sn_i_idx, sn_i) in enumerate(pure_sn_spectra)
+        Threads.@threads for sn_i_idx in 1:num_sn
+            sn_i = pure_sn_spectra[sn_i_idx]
             #The host galaxy redshift and the supernova redshfit will be the same, so only combine templates with the same Z
             sn_redshift = sn_info["redshift"][sn_file_names[sn_i_idx]]
             hg_indexes = findall(x -> hg_info["redshift"][x] == sn_redshift, hg_file_names)
