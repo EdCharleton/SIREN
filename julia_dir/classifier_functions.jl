@@ -98,9 +98,8 @@ module ClassifierFunctions
     - `normalised_x::Array{Float64,1}`: The normalised pure spectra.
     """
     function fitting_func(x, params)
-        a, b, sn_extinc = params
-        four_most_wl = collect(3790:20:9510)
-        fit = redden.(CCM89, four_most_wl, (x[:, 1] .* a); Av = sn_extinc, Rv = 3.1) .+ (x[:, 2] .* b)
+        a, b = params
+        fit = (x[:, 1] .* a) .+ (x[:, 2] .* b)
         return fit
     end
 
@@ -133,14 +132,14 @@ function fit_sn_hg(pure_sn_spectra, pure_hg_spectra, sn_info, hg_info, sn_file_n
         num_sn = length(pure_sn_spectra)
         num_hg = length(pure_hg_spectra)
     
+        #generate empty arrays to populate with the results of the fits
         chi_squared_arr = fill(Inf, num_sn, num_hg)
         chi_squared_red_arr = fill(Inf, num_sn, num_hg)
         norm_arr = zeros(Float64, num_sn, num_hg, 2)
-        sn_A_v_arr = zeros(Float64, num_sn, num_hg)
     
         max_target_spec_index = argmax(target_spectra)
         max_target_spec = maximum(target_spectra)
-    
+
         Threads.@threads for sn_i_idx in 1:num_sn
             sn_i = pure_sn_spectra[sn_i_idx]
             #The host galaxy redshift and the supernova redshfit will be the same, so only combine templates with the same Z
@@ -150,37 +149,35 @@ function fit_sn_hg(pure_sn_spectra, pure_hg_spectra, sn_info, hg_info, sn_file_n
             
             #Iterate through all possible combinations of supernova (SN) and Host Galaxy (HG) spectra
             for (hg_i_idx, hg_i) in enumerate(matching_z_hg_spectra)
-                p0 = [p0_sn[sn_i_idx], p0_hg[hg_i_idx], 0.0]
+                p0 = [p0_sn[sn_i_idx], p0_hg[hg_i_idx]]
                 hg_sn_spec = hcat(sn_i, hg_i)
                 
                 #Set bounds, the normalisation parameters should be positive, and the extinction parameters should be between -2 and 1
-                lower_bound = [0.0, 0.0, -0.2]
-                upper_bound = [max_target_spec ./ sn_i[max_target_spec_index]*1.2, max_target_spec ./ hg_i[max_target_spec_index]*1.2, 1]
+                lower_bound = [0.0, 0.0]
+                upper_bound = [max_target_spec ./ sn_i[max_target_spec_index]*1.2, max_target_spec ./ hg_i[max_target_spec_index]*1.2]
     
                 fit = curve_fit.(fitting_func, Ref(hg_sn_spec), Ref(target_spectra[:, 1]), Ref(p0); lower=lower_bound, upper=upper_bound)
                 #Fit errors commented out for now as LAPACK shit the bed, to use the technical term
                 #fit_errs = estimate_errors.(Ref(fit))
     
-                DoF = 4
+                DoF = 2
                 norm_sn = fit.param[1]
                 norm_hg = fit.param[2]
-                sn_A_v = fit.param[3]
 
                 four_most_wl = collect(3790:20:9510)
 
-                convolved_pure_spectra = redden.(CCM89, four_most_wl, (sn_i * norm_sn); Av = sn_A_v, Rv = 3.1) .+ (hg_i * norm_hg)
+                convolved_pure_spectra =  (sn_i * norm_sn) .+ (hg_i * norm_hg)
                 chi_squared = sum((target_spectra .- convolved_pure_spectra).^2 ./ target_spectra)
     
                 chi_squared_arr[sn_i_idx, hg_indexes[hg_i_idx]] = chi_squared
                 chi_squared_red_arr[sn_i_idx, hg_indexes[hg_i_idx]] = chi_squared / (length(target_spectra) - DoF)
                 norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 1] = norm_sn
                 norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 2] = norm_hg
-                sn_A_v_arr[sn_i_idx, hg_indexes[hg_i_idx]] = sn_A_v
 
             end
         end
     
-        return chi_squared_arr, chi_squared_red_arr, norm_arr, sn_A_v_arr
+        return chi_squared_arr, chi_squared_red_arr, norm_arr
     end
     
 
@@ -206,37 +203,24 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
         #Generate a guess at what the normalisation parameters should be. Half max for both components
         normalisation_guess_sn = (1 ./ maximum.(pure_sn_spectra_files)) .* maximum(altered_spectra) .* 0.5
         normalisation_guess_hg = (1 ./ maximum.(pure_hg_spectra_files)) .* maximum(altered_spectra) .* 0.5
-
-        # Add extinction to the host galaxy spectra to generate a new set of templates
-        Av_range = -0.2:0.05:1
-        extincted_pure_hg_spectra_files = [redden.(CCM89, collect(3790:20:9510), pure_hg_spectra_files[i]; Av = Av_val, Rv = 3.1) for Av_val in Av_range for i in eachindex(pure_hg_spectra_files)]
-        #Add the extintion values to the pure hg spectra info
-        extincted_pure_hg_spectra_info = deepcopy(pure_hg_spectra_info)
-        for (i, Av_val) in enumerate(Av_range)
-            for key in pure_hg_spectra_file_names
-                extincted_pure_hg_spectra_info["path"][string(key) * "_Av_" * string(Av_val)] = joinpath("extincted_pure_hg_spectra_dir", string(key) * "_Av_" * string(Av_val))
-                extincted_pure_hg_spectra_info["redshift"][string(key) * "_Av_" * string(Av_val)] = pure_hg_spectra_info["redshift"][key]
-            end
-        end
-
-
+        
         # Fit the spectra and return chi-squared and normalisation parameters
-        chi_squared,  chi_squared_red, norm_vals, sn_A_v_vals= fit_sn_hg(pure_sn_spectra_files, pure_hg_spectra_files, pure_sn_spectra_info, pure_hg_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_file_names, altered_spectra, (normalisation_guess_sn ), (normalisation_guess_hg))
+        chi_squared,  chi_squared_red, norm_vals= fit_sn_hg(extincted_pure_sn_spectra_files, extincted_pure_hg_spectra_files, extincted_pure_sn_spectra_info, extincted_pure_hg_spectra_info, extincted_pure_sn_spectra_file_names, extincted_pure_hg_spectra_file_names, altered_spectra, (normalisation_guess_sn ), (normalisation_guess_hg))
         best_indices = argmin(chi_squared)
 
         best_chi = chi_squared[best_indices[1], best_indices[2], :]
         best_chi_red = chi_squared_red[best_indices[1], best_indices[2]]
         best_norm_params = [norm_vals[best_indices[1], best_indices[2], 1], norm_vals[best_indices[1], best_indices[2], 2]]
-        best_sn_A_v = sn_A_v_vals[best_indices[1], best_indices[2]]
         
         #Define identified as a value of redshift within ± 0.03 of the true redshift and the correct type
         sn_redshift = pure_sn_spectra_info["redshift"][pure_sn_spectra_file_names[best_indices[1]]]
         target_redshift = altered_spectra_info["redshift"][altered_spectra_file_names[random_index]]
         sn_type = pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[best_indices[1]]]
+        hg_type = pure_hg_spectra_info["HG Type"][pure_hg_spectra_file_names[best_indices[2]]]
         target_type = altered_spectra_info["Type"][altered_spectra_file_names[random_index]]
         identified = (abs(sn_redshift - target_redshift) < 0.03) && (sn_type == target_type)
         identified_type = sn_type == target_type
-        true_a_v = altered_spectra_info["SN A_v"][altered_spectra_file_names[random_index]]
+        true_hg_type = altered_spectra_info["HG Type"][altered_spectra_file_names[random_index]]
 
         if show_plot == true
             #Define the 4MOST wavelength range
@@ -263,12 +247,13 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
             end
             
             #Generate the best fit (made and the respective host galaxy and supernova components) for plotting
-            sn_component = redden.(CCM89, four_most_wl, (best_norm_params[1] * pure_sn_spectra_files[best_indices[1]] ); Av = best_sn_A_v, Rv = 3.1)
+            sn_component = (best_norm_params[1] * pure_sn_spectra_files[best_indices[1]] )
             hg_component =   (best_norm_params[2]*pure_hg_spectra_files[best_indices[2]])
+
             best_fit = sn_component .+ hg_component
 
             # Plotting the data
-            axs.set_title("Type "* string(sn_type[1]) * " SNe at Z = " * string(sn_redshift) * L", \chi^2_\nu = " * string(round(best_chi_red, digits=2)) * L", A_V = " * string(round(best_sn_A_v, digits = 2)))
+            axs.set_title("Type "* string(sn_type[1]) * " SNe at Z = " * string(sn_redshift) * L", \chi^2_\nu = " * string(round(best_chi_red, digits=2)) * ", Host Type = " * string(hg_type) * " at Z = " * string(sn_redshift) )
             axs.plot(four_most_wl, altered_spectra, label="Target Spectra", color="black", alpha = 0.5)
             axs.plot(four_most_wl, best_fit, label="Best fit", color=plot_color)
             axs.fill_between(four_most_wl, (altered_spectra .- altered_spectra.^0.5)[:, 1], (altered_spectra .+ altered_spectra.^0.5)[:, 1], color="black", alpha=0.1)
@@ -278,7 +263,7 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
             axs.set_ylabel("Flux [Counts]")
             axs.set_ylim(0, 1.1 * maximum([maximum(altered_spectra), maximum(best_norm_params[1] .*pure_sn_spectra_files[best_indices[1]]), maximum(best_norm_params[2] .*pure_hg_spectra_files[best_indices[2]])]))
             axs.legend(loc="center", bbox_to_anchor=(0.5, -0.1), ncol = 4)
-            axs.text(0.9, 0.9, "True Type = " * string(target_type[1]) * "\n" * "True Z = " * string(target_redshift) * "\n" * "True " * L"A_v= " * string(round(true_a_v, digits = 2)), horizontalalignment="center", verticalalignment="center", transform=axs.transAxes, color="black", fontsize=12, bbox=Dict("facecolor"=>"white", "edgecolor"=>"black", "boxstyle"=>"round,pad=0.5"))
+            axs.text(0.9, 0.9, "True Type = " * string(target_type[1]) * "\n" * "True Z = " * string(target_redshift) * "\n" * "True HG = " * true_hg_type, horizontalalignment="center", verticalalignment="center", transform=axs.transAxes, color="black", fontsize=12, bbox=Dict("facecolor"=>"white", "edgecolor"=>"black", "boxstyle"=>"round,pad=0.5"))
 
             # Save the plot
             plotpath = joinpath("classifications_dir", "plots" , "fit_" * string(SN_ID) * ".png")
