@@ -29,7 +29,7 @@ def order_of_magnitude(value):
     """
     return math.floor(math.log(value, 10))
 
-def generate_model(model_type, wl):
+def generate_model(model_type, wl, redshift = 0.0):
     """
     Function that generates a SN Cosmo model
 
@@ -50,12 +50,17 @@ def generate_model(model_type, wl):
     min_z = 0 if min_z < 0 else min_z
     #max_z = (wl[0]/min_wl) -1 for the maximum redshift allowed by sncosmo
     max_z = 0.6 #for the maximum redshift that will produce usable spectra from 4MOST
-    redshift = np.arange(min_z, max_z, 0.01)
-    random_redshift = np.random.choice(redshift, size = 1)
+
+    if redshift > max_z:
+        print("Redshift is greater than the maximum redshift allowed by the model. Redshift has been set to the maximum redshift allowed by the model.")
+        redshift = max_z
+    elif redshift < min_z:
+        print("Redshift is less than the minimum redshift allowed by the model. Redshift has been set to the minimum redshift allowed by the model.")
+        redshift = min_z
 
     #Set the parameters for the model
-    model.set(z = random_redshift[0])
-    return model, random_redshift[0]
+    model.set(z = redshift)
+    return model, redshift
 
 def sn_spectra_generator(resolution, time_scale, model, time_period, wavelength):
     """
@@ -116,7 +121,7 @@ def redden_spectra(spectra, wavelength):
     spectrum_ext = spectra * ext.extinguish(wavelength)
     return spectrum_ext
     
-def noisey_sn_spectra_generator(spectra):
+def noisey_sn_spectra_generator(spectra, time):
     """
     Function that adds poisson noise to a 1D spectra
     Parameters:
@@ -133,8 +138,7 @@ def noisey_sn_spectra_generator(spectra):
             time = 'Unknown'
             break
         except:
-            #print("Error: Must be a 1D spectra. A random time has been selected and a spectra has been generated.")
-            time = np.random.randint(0, len(spectra))
+
             spectra = spectra[time] / np.max(spectra[time]) * 100
             break
 
@@ -199,6 +203,10 @@ spectra_resolution = len(four_most_wl)
 
 model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr"])
 sn_types = np.array(['Ia', 'II', 'Ic', 'Ib'])
+
+
+model_names = np.array(['salt3'])
+sn_types = np.array(['Ia'])
 
 pure_sn_dir = 'pure_sn_spectra_dir'
 noisey_sn_dir = 'noisey_sn_spectra_dir'
@@ -266,7 +274,8 @@ for hg_i in tqdm(range(number_of_host_galaxies)):
             hg_ID = hg_ID + 1
 
 
-number_of_spectra = 50
+number_of_spectra = 1
+redshift_range = np.arange(0, 0.6, 0.01)
 pure_sn_spectra_dict = {}
 noisey_sn_spectra_dict = {}
 convolved_spectra_dict = {}
@@ -278,89 +287,95 @@ print('---------------------------')
 pure_hg_spectra_df = pd.DataFrame.from_dict(pure_hg_spectra_dict, orient = 'index')
 noisey_hg_spectra_df = pd.DataFrame.from_dict(noisey_hg_spectra_dict, orient = 'index')
 
-
+number_of_templates = 0
 for i in tqdm(model_names):
-    for j in tqdm(range(number_of_spectra), leave=False):
+    for tau_idx in tqdm(tau):
         for sn_a_v in extinction_range:
-            #Generate the model
-            salt3_model, redshift = generate_model(i, four_most_wl)
+            for z_igx in redshift_range:
+                #Generate the model
+                salt3_model, redshift = generate_model(i, four_most_wl, z_igx)
 
-            pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, length_of_phase, salt3_model, tau, four_most_wl)))
-            noisey_sn_spectra, day = noisey_sn_spectra_generator(pure_sn_spectra)
+                pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, length_of_phase, salt3_model, tau, four_most_wl)))
+
+                noisey_sn_spectra, day = noisey_sn_spectra_generator(pure_sn_spectra, int(tau_idx - tau[0]))
+                day = int(day + tau[0])
+                
+                vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range)*len(redshift_range))
+                hg_type_igx = 0
+
+                #Search the dataframe of the host galaxy spectra and import the one with the right redshift
+                for n in range(len(noisey_hg_spectra_df['redshift'])):
+                    if noisey_hg_spectra_df['redshift'].iloc[n] == redshift:
+                        vals_array[hg_type_igx] = n
+                        hg_type_igx = hg_type_igx + 1
+
+                #Select a random host galaxy spectra to create our fake spectrum
+                val = int(np.random.choice(vals_array[vals_array != 0]))
+
+                noisey_hg_file_names = noisey_hg_spectra_df.index.values
+                noisey_hg_spectra = np.loadtxt(os.path.join(noisey_hg_spectra_df['path'].iloc[val], noisey_hg_file_names[val]), delimiter=',')
+                pure_hg_spectra = np.loadtxt(os.path.join(pure_hg_spectra_df['path'].iloc[val], pure_hg_spectra_df.index.values[val]), delimiter=',')
             
-            vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range))
-            hg_type_igx = 0
+                #Add the host galaxy spectra to the supernova spectra
+                contamination_amount = np.random.uniform(0.1, 2)
+                normalised_noisey_hg_spectra = noisey_hg_spectra * contamination_amount
 
-            #Search the dataframe of the host galaxy spectra and import the one with the right redshift
-            noisey_hg_file_names = noisey_hg_spectra_df.index.values
-            for n in range(len(noisey_hg_spectra_df['redshift'])):
-                if noisey_hg_spectra_df['redshift'].iloc[n] == redshift:
-                    vals_array[hg_type_igx] = n
-                    hg_type_igx = hg_type_igx + 1
+                # Convert the variables to 'double' data type
+                four_most_wl = four_most_wl.astype('double')
+                noisey_sn_spectra = noisey_sn_spectra.astype('double')
+                normalised_noisey_hg_spectra = normalised_noisey_hg_spectra.astype('double')
 
-            val = int(np.random.choice(vals_array[vals_array != 0]))
+                #Redden the supernova spectra
+                dusty_sn_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=sn_a_v, r_v=r_v), noisey_sn_spectra)
 
-            noisey_hg_spectra = np.loadtxt(os.path.join(noisey_hg_spectra_df['path'].iloc[val], noisey_hg_file_names[val]), delimiter=',')
-            pure_hg_spectra = np.loadtxt(os.path.join(pure_hg_spectra_df['path'].iloc[val], pure_hg_spectra_df.index.values[val]), delimiter=',')
-        
-            #Add the host galaxy spectra to the supernova spectra
-            contamination_amount = np.random.uniform(0.1, 2)
-            normalised_noisey_hg_spectra = noisey_hg_spectra * contamination_amount
+                #Redden the host galaxy spectra
+                dusty_hg_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=hg_a_v, r_v=r_v), normalised_noisey_hg_spectra)
 
-            # Convert the variables to 'double' data type
-            four_most_wl = four_most_wl.astype('double')
-            noisey_sn_spectra = noisey_sn_spectra.astype('double')
-            normalised_noisey_hg_spectra = normalised_noisey_hg_spectra.astype('double')
+                #Add the host galaxy spectra to the supernova spectra
+                convolved_spectra = dusty_sn_spectra + dusty_hg_spectra
 
-            #Redden the supernova spectra
-            dusty_sn_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=sn_a_v, r_v=r_v), noisey_sn_spectra)
-
-            #Redden the host galaxy spectra
-            dusty_hg_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=hg_a_v, r_v=r_v), normalised_noisey_hg_spectra)
-
-            #Add the host galaxy spectra to the supernova spectra
-            convolved_spectra = dusty_sn_spectra + dusty_hg_spectra
-
-            #Save the noisey sn spectra metadata to a dictionary
-            noisey_sn_spectrum_info = {
-            'Model Type: ': i,
-            'Type': sn_types[np.where(model_names == i)],
-            'redshift': redshift,
-            'tau': day,
-            'SN A_v': sn_a_v,
-            'path': str(os.path.join(noisey_sn_dir, 'type_{0}'.format(sn_types[np.where(model_names == i)[0][0]])))}
-            noisey_sn_spectra_dict['{0}_{1}_{2}.txt'.format(i, j+1, np.round(sn_a_v), 2)] = noisey_sn_spectrum_info
-
-            #Save the pure sn spectra metadata to a dictionary
-            pure_sn_spectrum_info = {
-            'Model Type: ': i,
-            'Type': sn_types[np.where(model_names == i)],
-            'redshift': redshift,
-            'tau': day,
-            'SN A_v': sn_a_v,
-            'path': str(os.path.join(pure_sn_dir, 'type_{0}'.format(sn_types[np.where(model_names == i)[0][0]])))}
-            pure_sn_spectra_dict['{0}_{1}_{2}.txt'.format(i, j+1, np.round(sn_a_v, 2))] = pure_sn_spectrum_info
-            
-            #Save the convolved spectra metadata to a dictionary
-            convolved_spectrum_info = {
+                #Save the noisey sn spectra metadata to a dictionary
+                noisey_sn_spectrum_info = {
                 'Model Type: ': i,
                 'Type': sn_types[np.where(model_names == i)],
                 'redshift': redshift,
                 'tau': day,
-                'host galaxy contamination': contamination_amount,
-                'HG Type': noisey_hg_spectra_df['HG Type'].iloc[val],
                 'SN A_v': sn_a_v,
-                'HG A_v': noisey_hg_spectra_df['HG A_v'].iloc[val],
-                'R_V': r_v,
-                'Dust Law': dust_law,
-                'path': str(os.path.join(convolved_spectra_dir))}
-            convolved_spectra_dict['{0}_{1}_{2}_{3}'.format(i, j+1, noisey_hg_file_names[val], np.round(sn_a_v, 2))] = convolved_spectrum_info
+                'path': str(os.path.join(noisey_sn_dir, 'type_{0}'.format(sn_types[np.where(model_names == i)[0][0]])))}
+                noisey_sn_spectra_dict['{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2))] = noisey_sn_spectrum_info
 
-            #Export the individual spectra to a txt file
-            np.savetxt(os.path.join(pure_sn_dir, "type_{0}".format(sn_types[np.where(model_names == i)[0][0]]), '{0}_{1}_{2}.txt'.format(i, j+1, np.round(sn_a_v, 2))), pure_sn_spectra[day], delimiter=',', fmt='%s')
-            np.savetxt(os.path.join(noisey_sn_dir, "type_{0}".format(sn_types[np.where(model_names == i)[0][0]]), '{0}_{1}_{2}.txt'.format(i, j+1, np.round(sn_a_v, 2))), noisey_sn_spectra, delimiter=',', fmt='%s')
-            np.savetxt(os.path.join(convolved_spectra_dir, '{0}_{1}_{2}_{3}'.format(i, j+1, noisey_hg_file_names[val], np.round(sn_a_v, 2))), convolved_spectra, delimiter=',', fmt='%s')
-    
+                #Save the pure sn spectra metadata to a dictionary
+                pure_sn_spectrum_info = {
+                'Model Type: ': i,
+                'Type': sn_types[np.where(model_names == i)],
+                'redshift': redshift,
+                'tau': day,
+                'SN A_v': sn_a_v,
+                'path': str(os.path.join(pure_sn_dir, 'type_{0}'.format(sn_types[np.where(model_names == i)[0][0]])))}
+                pure_sn_spectra_dict['{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2))] = pure_sn_spectrum_info
+                
+                #Save the convolved spectra metadata to a dictionary
+                convolved_spectrum_info = {
+                    'Model Type: ': i,
+                    'Type': sn_types[np.where(model_names == i)],
+                    'redshift': redshift,
+                    'tau': day,
+                    'host galaxy contamination': contamination_amount,
+                    'HG Type': noisey_hg_spectra_df['HG Type'].iloc[val],
+                    'SN A_v': sn_a_v,
+                    'HG A_v': noisey_hg_spectra_df['HG A_v'].iloc[val],
+                    'R_V': r_v,
+                    'Dust Law': dust_law,
+                    'path': str(os.path.join(convolved_spectra_dir))}
+                convolved_spectra_dict['{0}_{1}_{2}_{3}_{4}'.format(i, tau_idx, noisey_hg_file_names[val], np.round(sn_a_v, 2), np.round(z_igx, 2))] = convolved_spectrum_info
+
+                #Export the individual spectra to a txt file
+                np.savetxt(os.path.join(pure_sn_dir, "type_{0}".format(sn_types[np.where(model_names == i)[0][0]]), '{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2))), pure_sn_spectra[day], delimiter=',', fmt='%s')
+                np.savetxt(os.path.join(noisey_sn_dir, "type_{0}".format(sn_types[np.where(model_names == i)[0][0]]), '{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2))), noisey_sn_spectra, delimiter=',', fmt='%s')
+                np.savetxt(os.path.join(convolved_spectra_dir, '{0}_{1}_{2}_{3}_{4}'.format(i, tau_idx, noisey_hg_file_names[val], np.round(sn_a_v, 2), np.round(z_igx, 2))), convolved_spectra, delimiter=',', fmt='%s')
+                number_of_templates = number_of_templates + 1
+
+print(number_of_templates)
 #Turn into a dataframe for exporting
 pure_sn_spectra_df = pd.DataFrame.from_dict(pure_sn_spectra_dict, orient = 'index')
 noisey_sn_spectra_df = pd.DataFrame.from_dict(noisey_sn_spectra_dict, orient = 'index')

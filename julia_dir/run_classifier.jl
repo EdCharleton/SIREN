@@ -19,6 +19,7 @@ matplotlib = pyimport("matplotlib")
 plt = pyimport("matplotlib.pyplot")
 rcParams = matplotlib[:rcParams]
 
+
 # Load the data
 four_most_wl = collect(3790:20:9510)
 
@@ -44,17 +45,20 @@ end
 
 
 #-------------------------------------------------- RUN THE CLASSIFIER --------------------------------------------------
-number_of_iterations = 50
+number_of_iterations = 1
 success_rate_count = 0
 show_plots = true
 
 #Delete the plots if they exist
 if show_plots == true
     path = joinpath("classifications_dir", "plots" )
-    delete_folder_contents(path)
+    #delete_folder_contents(path)
 end
 ENV["JULIA_NUM_THREADS"] = "auto"
 n_threads = Threads.nthreads()
+
+
+
 println("----------------------------------------------")
 println("Running the chi squared classifier ", number_of_iterations, " times with ", n_threads, " threads...")
 println("----------------------------------------------")
@@ -76,23 +80,26 @@ for n in ProgressBar(1:number_of_iterations)
     file_path = joinpath(convolved_spectra_path, string(convolved_spectra_key))
     convolved_spectra = readdlm(file_path)
 
-    name_of_best_sn_match, name_of_best_hg_match, best_params, success, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_info, pure_hg_spectra_file_names, convolved_spectra, convolved_spectra_info, convolved_spectra_file_names, random_index, n, show_plots)
+    convolved_spectra = readdlm("real_spectra_dir/2011fe.dat")[:,2]
+
+
+    name_of_best_sn_match, name_of_best_hg_match, best_params, success, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_info, pure_hg_spectra_file_names, convolved_spectra, random_index, n, show_plots)
 
     #Check if a success by comparison with the random index
     comparison_name = name_of_best_sn_match[1:end-4] * "_" * name_of_best_hg_match
 
     if success == true
-        println("Correct SN Found")
+        #println("Correct SN Found")
         global success_rate_count += 1
     else
-        println("Incorrect SN Found")
+        #println("Incorrect SN Found")
     end
 
     println("Fit Number        : ", n)
     println("best fit          : ", comparison_name)
     #println("redshift prior fit: ", redshift_prior_comparison)
-    println("real spectra      : ", convolved_spectra_key)
-    println("HG Contamination  : ", convolved_spectra_hg_contamination)
+    #println("real spectra      : ", convolved_spectra_key)
+    #println("HG Contamination  : ", convolved_spectra_hg_contamination)
     #println("p0 sn             : ", p0_sn)
     #println("p0 hg             : ", p0_hg)
     println("SN fit params     : ", best_params[1])
