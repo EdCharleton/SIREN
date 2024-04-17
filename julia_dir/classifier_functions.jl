@@ -19,7 +19,7 @@ module ClassifierFunctions
     using DataStructures
     using Plots
     using Pkg
-    using Interpolations: Linear, BSpline, OnGrid
+    using Interpolations: Linear, Gridded, interpolate
     using LsqFit
     using PyCall
     using LaTeXStrings
@@ -67,17 +67,7 @@ module ClassifierFunctions
     #--------------------- Adaptive Binning ---------------------
     """
         adapative_binning(altered_spectra, pure_spectra)
-    Function that bins the spectra if the number of counts within a region is less than 20 to put it in the gaussian regime
-
-    # Parameters
-    - `altered_spectra::Array{Float64,1}`: The altered spectra.
-    - `pure_spectra::Array{Float64,1}`: The initial spectra.
-    - `pure_spectra_err::Array{Float64,1}`: The initial spectra errors.
-
-    # Returns
-    - `binned_altered_spectra::Array{Float64,1}`: The binned altered spectra.
-    - `binned_pure_spectra::Array{Float64,1}`: The binned initial spectra.
-    - `binned_pure_spectra_err::Array{Float64,1}`: The binned initial spectra errors.
+    TBW
     """
     function adaptive_binning(altered_spectra, pure_spectra)
         bin_mask = altered_spectra .< 20
@@ -105,10 +95,23 @@ module ClassifierFunctions
         return fit
     end
 
+
+    #--------------------- Read in files ---------------------
+    """
+    read_file(key, spectra_dict)
+
+    TBW
+"""
+function read_file(key, spectra_dict)
+        return readdlm(joinpath(spectra_dict["path"][key], string(key)))
+    end
+
+    
     #------------------- Fit The SNe and HG spectra -------------------
 
     """
-    fit_sn_hg(pure_sn_spectra, pure_hg_spectra, sn_info, hg_info, sn_file_names, hg_file_names, target_spectra, p0_sn, p0_hg)
+    fit_sn_hg(pure_sn_spectra, pure_hg
+    _spectra, sn_info, hg_info, sn_file_names, hg_file_names, target_spectra, p0_sn, p0_hg)
 
     Function that combines and fits all possible combinations of supernova and host galaxy spectra to the target spectra
 
@@ -180,30 +183,151 @@ function fit_sn_hg(pure_sn_spectra, pure_hg_spectra, sn_info, hg_info, sn_file_n
         return chi_squared_arr, chi_squared_red_arr, norm_arr
     end
     
-#------------------- Filter Flux Calculations -------------------
+#------------------- B finding func -----------------------------
 
-using Interpolations
+#Attempt with no 1-B = C condition
 
-function filter_flux(spectra_wl, spectra_flux, filter_curve, filter_wl)
-    # Trim the spectra to the same range as the filter
-    indexs = findall(x -> x >= minimum(filter_wl) && x <= maximum(filter_wl), spectra_wl)
-    spectra_wl = spectra_wl[indexs]
-    spectra_flux = spectra_flux[indexs]
+function calculate_B(F_obs, F_SN, F_HG, sigma)
+    numerator = sum(((F_SN .* F_obs)./sigma.^2) .- ((F_HG .* F_SN ./ sigma.^2).*(sum(F_HG .* F_obs ./ sigma.^2) / sum(F_HG.^2 ./ sigma.^2))))
 
-    # Interpolate the filter to have the same resolution as the spectra
-    filter_curve_interp = interpolate((filter_wl,), filter_curve, Gridded(Linear()))
+    denominator = sum((F_SN.^2 ./ sigma.^2)  .- (F_HG.* F_SN ./ sigma.^2).* (sum(F_HG .* F_SN ./ sigma.^2) / sum(F_HG.^2 ./ sigma.^2)))
+    B = numerator / denominator
+    return B
+end
 
-    # Evaluate the interpolated filter at the wavelengths of the spectra
-    interpolated_filter_values = filter_curve_interp(spectra_wl)
-
-    # Plotting
-    plt.plot(spectra_wl, spectra_flux, color = "black")
-    plt.plot(filter_wl, filter_curve * maximum(spectra_flux))
-    plt.plot(spectra_wl, interpolated_filter_values * maximum(spectra_flux), linestyle = "--")
-    plt.show()
+function calculate_C(F_obs, F_SN, F_HG, sigma)
+    numerator = sum((F_HG .* F_SN ./ sigma.^2) .* (sum(F_SN.*F_obs ./ sigma.^2)/sum(F_SN.^2 ./ sigma.^2)) .- (F_HG .* F_obs ./ sigma.^2))
+    denominator = sum((F_HG .* F_SN ./ sigma.^2) .* (sum(F_SN .* F_HG ./ sigma.^2) / sum(F_SN.^2 ./ sigma.^2)) .- (F_HG.^2 ./ sigma.^2))
+    C = numerator / denominator
+    return C
 end
 
 
+#------------------- Filter Flux Calculations -------------------
+
+#function filter_flux(spectra_wl, spectra_flux, filter_curve, filter_wl, sn_spectra, hg_spectra)
+
+"""
+    filter_flux(spectra_to_fit, spectra_wl, filter_curve, filter_wl, pure_sn_spectra, sn_file_names, pure_hg_spectra, hg_file_names)
+
+TBW
+"""
+function filter_flux(spectra_to_fit, spectra_wl, filter_curve, filter_wl, pure_sn_spectra, sn_file_names, sn_info, pure_hg_spectra, hg_file_names, hg_info)
+    # Trim the spectra to the same range as the filter
+    #indexes = findall(x -> x >= minimum(filter_wl) && x <= maximum(filter_wl), spectra_wl)
+    #spectra_wl = spectra_wl[indexes]
+    #filter_spectra_to_fit = spectra_to_fit[indexes]
+
+    # Interpolate the filter to have the same resolution as the spectra
+    #filter_curve_interp = interpolate((filter_wl,), filter_curve, Gridded(Linear()))
+
+    # Evaluate the interpolated filter at the wavelengths of the spectra
+    #interpolated_filter_values = filter_curve_interp(spectra_wl)
+
+    # Calculate the flux inside the filter of the spectrum and the individual components
+    #spectra_flux = sum(filter_spectra_to_fit .* interpolated_filter_values) 
+
+    #Generate empty matricies to store the different parameters returned from the fit
+    num_sn = length(pure_sn_spectra)
+    num_hg = length(pure_hg_spectra)
+
+    #generate empty arrays to populate with the results of the fits
+    chi_squared_arr = fill(Inf, num_sn, num_hg)
+    chi_squared_red_arr = fill(Inf, num_sn, num_hg)
+    norm_arr = zeros(Float64, num_sn, num_hg, 2)
+
+    #only use spectra at redshift 0 for testing:
+
+
+    Threads.@threads for sn_i_idx in ProgressBar(1:num_sn)
+
+        #If the redshift of the supernova isnt 0, skip it
+        if sn_info["redshift"][sn_file_names[sn_i_idx]] != 0
+            continue
+        end
+
+        #sn_flux = sum(pure_sn_spectra[sn_i_idx][indexes] .* interpolated_filter_values)
+        #sn_flux_val = sn_flux / spectra_flux
+        sn_i = pure_sn_spectra[sn_i_idx] 
+
+        sn_redshift = sn_info["redshift"][sn_file_names[sn_i_idx]]
+        hg_indexes = findall(x -> hg_info["redshift"][x] == sn_redshift, hg_file_names)
+        matching_z_hg_spectra = pure_hg_spectra[hg_indexes]
+
+        
+        #Iterate through all possible combinations of supernova (SN) and Host Galaxy (HG) spectra
+        for hg_i_idx in eachindex(hg_indexes)
+            #hg_flux = sum(matching_z_hg_spectra[hg_i_idx][indexes] .* interpolated_filter_values)
+            #hg_flux_val = hg_flux / spectra_flux
+
+            hg_i = matching_z_hg_spectra[hg_i_idx] 
+
+            norm_sn = calculate_B(spectra_to_fit, sn_i, hg_i, sqrt.(spectra_to_fit))
+            norm_hg = calculate_C(spectra_to_fit, sn_i, hg_i, sqrt.(spectra_to_fit))
+
+            convolved_pure_spectra =  (sn_i * norm_sn) .+ (hg_i * norm_hg)
+            chi_squared = sum((spectra_to_fit .- convolved_pure_spectra).^2 ./ spectra_to_fit)
+
+            DoF = 2
+
+            chi_squared_arr[sn_i_idx, hg_indexes[hg_i_idx]] = chi_squared
+            chi_squared_red_arr[sn_i_idx, hg_indexes[hg_i_idx]] = chi_squared / (length(spectra_to_fit) - DoF)
+            norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 1] = norm_sn 
+            norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 2] = norm_hg 
+
+        end
+    end
+
+    return chi_squared_arr, chi_squared_red_arr, norm_arr
+end
+
+
+#------------------- Analytic Minimisation -------------------
+"""
+    analytic_minimisation(pure_sn_spectra_templates, spectra_to_fit)
+
+TBW
+"""
+function analytic_minimisation(pure_sn_spectra_templates, sn_template_info, sn_file_names, spectra_to_fit)
+    n_templates = length(pure_sn_spectra_templates)
+    chi_squared = fill(Inf, n_templates)
+    A_vals = fill(Inf, n_templates)
+
+    Threads.@threads for i in ProgressBar(1:n_templates)
+        A = (sum((pure_sn_spectra_templates[i] .* spectra_to_fit) ./ sqrt.(spectra_to_fit))) / (sum((pure_sn_spectra_templates[i].^2) ./ sqrt.(spectra_to_fit)))
+        chi_squared[i] = sum((spectra_to_fit .- (A .* pure_sn_spectra_templates[i])).^2 ./ spectra_to_fit)
+        A_vals[i] = A
+    end
+
+    best_index = argmin(chi_squared)
+    best_A = A_vals[best_index]
+    best_chi = chi_squared[best_index]
+    best_A_v = sn_template_info["SN A_v"][sn_file_names[best_index]]
+    best_Z = sn_template_info["redshift"][sn_file_names[best_index]]
+    best_phase = sn_template_info["tau"][sn_file_names[best_index]]
+
+    #Plotting - delete when done
+    four_most_wl = collect(3790:20:9510)
+
+    fig, axs = plt.subplots(nrows=1, ncols=1, figsize=(12, 8), dpi=300)  # figsize adjusted for two plots           
+    axs.tick_params(axis="both", which="major", width=1, length=6, direction="in", bottom = true, top = true, left = true, right = true)
+    axs.tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom = true, top = true, left = true, right = true)
+    axs.minorticks_on()
+    axs.plot(four_most_wl, spectra_to_fit, label="Target Spectra", color="black", alpha = 0.5)
+    axs.plot(four_most_wl, best_A .* pure_sn_spectra_templates[best_index], label="Best fit", color="green")
+    axs.fill_between(four_most_wl, (spectra_to_fit .- spectra_to_fit.^0.5)[:, 1], (spectra_to_fit .+ spectra_to_fit.^0.5)[:, 1], color="black", alpha=0.1)
+    axs.text(0.8, 0.9, L"\chi^2_\nu = " * string(round(best_chi/(length(spectra_to_fit)-1), digits=2)) * "\n" * "A = " * string(round(best_A, digits = 2)) * "\n" * L"A_v = " * string(best_A_v) * "\n" * "Z = " * string(best_Z) * "\n" * L"\tau = " * string(best_phase), horizontalalignment="center", verticalalignment="center", transform=axs.transAxes, color="black", fontsize=12, bbox=Dict("facecolor"=>"white", "edgecolor"=>"black", "boxstyle"=>"round,pad=0.5"))
+    axs.set_xlabel("Wavelength " * "[" * L"\AA" * "]")
+    axs.set_ylabel("Flux [Counts]")
+    axs.set_ylim(0, 1.1 * maximum([maximum(spectra_to_fit), maximum(best_A .* pure_sn_spectra_templates[best_index])]))
+    axs.legend(loc="center", bbox_to_anchor=(0.5, -0.1), ncol = 4)
+    plotpath = joinpath("classifications_dir", "plots" , "analytic_fit_" * string(1) * ".png")
+    plt.savefig(plotpath)
+    plt.close()
+
+
+    return best_A, best_chi
+end
 
 
     #------------------- Chi Squared Classifier -------------------
@@ -214,9 +338,20 @@ TBW
 """
 function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_info, pure_hg_spectra_file_names, altered_spectra, random_index, SN_ID, show_plot = false)
 
+        println("Loading in templates...")
+        #Read in the pure sn and hg spectra
         @time begin
-            pure_sn_spectra_files = [readdlm(joinpath(pure_sn_spectra_info["path"][key], string(key))) for key in pure_sn_spectra_file_names]
-            pure_hg_spectra_files = [readdlm(joinpath(pure_hg_spectra_info["path"][key], string(key))) for key in pure_hg_spectra_file_names]
+            pure_sn_spectra_files = Vector{Any}(undef, length(pure_sn_spectra_file_names))
+            Threads.@threads for i in eachindex(pure_sn_spectra_file_names)
+                key = pure_sn_spectra_file_names[i]
+                pure_sn_spectra_files[i] = read_file(key, pure_sn_spectra_info)
+            end
+
+            pure_hg_spectra_files = Vector{Any}(undef, length(pure_hg_spectra_file_names))
+            Threads.@threads for i in eachindex(pure_hg_spectra_file_names)
+                key = pure_hg_spectra_file_names[i]
+                pure_hg_spectra_files[i] = read_file(key, pure_hg_spectra_info)
+            end
         end
 
         #To avoid dealing with small numbers, immediately scale up the spectra to be around 100
@@ -226,8 +361,8 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
         pure_hg_spectra_files = pure_hg_spectra_files ./ hg_spec_means .* 100
 
         #Generate a guess at what the normalisation parameters should be. Half max for both components
-        normalisation_guess_sn = (1 ./ maximum.(pure_sn_spectra_files)) .* maximum(altered_spectra) .* 0.5
-        normalisation_guess_hg = (1 ./ maximum.(pure_hg_spectra_files)) .* maximum(altered_spectra) .* 0.5
+        normalisation_guess_sn = (1 ./ maximum.(pure_sn_spectra_files)) .* maximum(altered_spectra) .* 1.0
+        normalisation_guess_hg = (1 ./ maximum.(pure_hg_spectra_files)) .* maximum(altered_spectra) .* 1.0
         
         # Fit the spectra and return chi-squared and normalisation parameters
         four_most_wl = collect(3790:20:9510)
@@ -235,10 +370,16 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
         bessel_v_dat = readdlm("filters_dir/Generic_Bessell.V.dat")
         bessel_v_wl = bessel_v_dat[:, 1]
         bessel_v_curve = bessel_v_dat[:, 2]
+        
 
-        filter_flux(four_most_wl, altered_spectra, bessel_v_curve, bessel_v_wl)
+        alt_chi, alt_A = analytic_minimisation(pure_sn_spectra_files, pure_sn_spectra_info, pure_sn_spectra_file_names, altered_spectra)
 
-        chi_squared,  chi_squared_red, norm_vals= fit_sn_hg(pure_sn_spectra_files, pure_hg_spectra_files, pure_sn_spectra_info, pure_hg_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_file_names, altered_spectra, (normalisation_guess_sn ), (normalisation_guess_hg))
+        @time begin
+            chi_squared,  chi_squared_red, norm_vals = filter_flux(altered_spectra, four_most_wl, bessel_v_curve, bessel_v_wl, pure_sn_spectra_files, pure_sn_spectra_file_names, pure_sn_spectra_info,pure_hg_spectra_files, pure_hg_spectra_file_names, pure_hg_spectra_info)
+        end
+        
+
+        #chi_squared,  chi_squared_red, norm_vals= fit_sn_hg(pure_sn_spectra_files, pure_hg_spectra_files, pure_sn_spectra_info, pure_hg_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_file_names, altered_spectra, (normalisation_guess_sn ), (normalisation_guess_hg))
         best_indices = argmin(chi_squared)
 
         best_chi = chi_squared[best_indices[1], best_indices[2], :]
@@ -299,20 +440,21 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
             best_fit = sn_component .+ hg_component
 
             # Plotting the data
-            axs.set_title("Type "* string(sn_type[1]) * " SNe at Z = " * string(sn_redshift) * L", \chi^2_\nu = " * string(round(best_chi_red, digits=2)) * ", Host Type = " * string(hg_type) * " at Z = " * string(sn_redshift) * L"A_v = " *string(sn_a_v) * "Phase = " * string(phase) * "days")
+            axs.set_title("SN2011fe With Large Sa Host Galaxy Contamination")
             axs.plot(four_most_wl, altered_spectra, label="Target Spectra", color="black", alpha = 0.5)
             axs.plot(four_most_wl, best_fit, label="Best fit", color=plot_color)
             axs.fill_between(four_most_wl, (altered_spectra .- altered_spectra.^0.5)[:, 1], (altered_spectra .+ altered_spectra.^0.5)[:, 1], color="black", alpha=0.1)
             axs.plot(four_most_wl, hg_component, label="Pure HG", color="#D980FA", linestyle = "--")
             axs.plot(four_most_wl, sn_component, label="Pure SN", color="#1289A7", linestyle = ":")
             axs.set_xlabel("Wavelength " * "[" * L"\AA" * "]")
-            axs.set_ylabel("Flux [Counts]")
+            axs.set_ylabel("Flux [AU]")
+            axs.text(0.8, 0.8, L"\chi^2_\nu = " * string(round(best_chi_red, digits=2)) * "\n" * "SN = Type " * string(sn_type[1]) * "\n" * "Host = " * string(hg_type) * "\n" * "Z = " *string(round(sn_redshift, digits = 2)) * "\n" * "HG Contamination = " * string(round(best_norm_params[2]/(best_norm_params[1] + best_norm_params[2]) * 100, digits = 3)) * "%" * '\n' * "Phase = " * string(phase) * " days", horizontalalignment="center", verticalalignment="center", transform=axs.transAxes, color="black", fontsize=12, bbox=Dict("facecolor"=>"white", "edgecolor"=>"black", "boxstyle"=>"round,pad=0.5"))
             axs.set_ylim(0, 1.1 * maximum([maximum(altered_spectra), maximum(best_norm_params[1] .*pure_sn_spectra_files[best_indices[1]]), maximum(best_norm_params[2] .*pure_hg_spectra_files[best_indices[2]])]))
             axs.legend(loc="center", bbox_to_anchor=(0.5, -0.1), ncol = 4)
             #axs.text(0.9, 0.9, "True Type = " * string(target_type[1]) * "\n" * "True Z = " * string(target_redshift) * "\n" * "True HG = " * true_hg_type * "\n" * "True " * L"A_v = " * string(true_sn_a_v), horizontalalignment="center", verticalalignment="center", transform=axs.transAxes, color="black", fontsize=12, bbox=Dict("facecolor"=>"white", "edgecolor"=>"black", "boxstyle"=>"round,pad=0.5"))
 
             # Save the plot
-            plotpath = joinpath("classifications_dir", "plots" , "fit_" * string(SN_ID+1) * ".png")
+            plotpath = joinpath("classifications_dir", "plots" , "sn_2011fe_with_large_sa_hg" * ".png")
             plt.savefig(plotpath)
             plt.close()
         end

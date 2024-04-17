@@ -80,7 +80,7 @@ for n in ProgressBar(1:number_of_iterations)
     file_path = joinpath(convolved_spectra_path, string(convolved_spectra_key))
     convolved_spectra = readdlm(file_path)
 
-    convolved_spectra = readdlm("real_spectra_dir/2011fe.dat")[:,2]
+    convolved_spectra = readdlm("real_spectra_dir/2011fe_host_galaxy_high_contam.dat")[:,2]
 
 
     name_of_best_sn_match, name_of_best_hg_match, best_params, success, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_info, pure_hg_spectra_file_names, convolved_spectra, random_index, n, show_plots)

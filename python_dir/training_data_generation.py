@@ -205,8 +205,8 @@ model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004g
 sn_types = np.array(['Ia', 'II', 'Ic', 'Ib'])
 
 
-model_names = np.array(['salt3'])
-sn_types = np.array(['Ia'])
+#model_names = np.array(['salt3'])
+#sn_types = np.array(['Ia'])
 
 pure_sn_dir = 'pure_sn_spectra_dir'
 noisey_sn_dir = 'noisey_sn_spectra_dir'
