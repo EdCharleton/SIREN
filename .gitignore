@@ -7,3 +7,7 @@ pure_sn_spectra_dir/
 classifications_dir/
 host_galaxy_gen_dir/
 real_spectra_dir/
+sn_template_dir/
+hg_template_dir/
+old_files/
+template_testing_info/

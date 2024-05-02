@@ -1,0 +1,33 @@
+
+using FITSIO
+using PyCall
+matplotlib = pyimport("matplotlib")
+plt = pyimport("matplotlib.pyplot")
+
+function read_fits_file(directory::String)
+    files_dict = Dict{String, Tuple{Vector{Float16}, Vector{Float16}}}()
+    for filename in readdir(directory)
+        if endswith(filename, ".fits")
+            file_path = joinpath(directory, filename)
+            f = FITS(file_path)
+            hdr = read_header(f[1])
+
+            spectra = read(f[1])
+            wl = collect(hdr["CRVAL1"] - (hdr["CRPIX1"] * hdr["CDELT1"]) : hdr["CDELT1"] : (hdr["NAXIS1"] - hdr["CRPIX1"] - 1) * hdr["CDELT1"] + hdr["CRVAL1"])
+            println(hdr)
+            spec_min = minimum(spectra)
+            if spec_min < 0
+                spectra = spectra .+ abs(spec_min)
+            end
+            spectra = spectra ./ maximum(spectra) .* 100
+
+            files_dict[filename] = (wl, spectra)
+
+        end
+
+    end
+    return files_dict
+    
+end
+
+read_fits_file("real_spectra_dir/LS01490w.fits")
