@@ -16,6 +16,7 @@ using LsqFit
 using PyCall
 using Conda
 using LaTeXStrings
+using CSV
 matplotlib = pyimport("matplotlib")
 plt = pyimport("matplotlib.pyplot")
 rcParams = matplotlib[:rcParams]
@@ -49,13 +50,17 @@ if delete_plot_folder_contents == true
     delete_folder_contents(path)
 end
 
+
+
 println("----------------------------------------------")
 println("Loading in Templates...")
 println("----------------------------------------------")
+#---------------------------------------Temporary while working with OzDES data-----------------------------------------
+OzDES_metadata = CSV.read(joinpath("real_spectra_dir", "metadata","snspect.csv"), DataFrame, delim=',')
+all_target_names = OzDES_metadata[!, "TRANSIENT_NAME"]
 
 pure_sn_spectra_files = read_template_files(pure_sn_spectra_file_names, pure_sn_spectra_info, "Supernova Template")
 pure_hg_spectra_files = read_template_files(pure_hg_spectra_file_names, pure_hg_spectra_info, "Hg Template")
-
 
 
 #read in target spectra
@@ -69,11 +74,20 @@ println("Classifying ", length(target_spectra_names), " spectra with ", n_thread
 println("----------------------------------------------")
 
 for n in (target_spectra_names)
-    target_wl, target_spectra = target_spectra_dict[n]
+    target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
     target_name = splitext(n)[1]
 
+    #When Working on the OzDES data
+    target_index = findall(x -> occursin(x, target_name), all_target_names)
+    target_redshift = OzDES_metadata[target_index, "Z_GAL"]
+    if target_redshift[1] > 10.0 || target_redshift[1] < 0.0
+        target_redshift[1] = Float16(OzDES_metadata[target_index, "Z_SN"][1])
+    end
+
     println("Classifying ", target_name, "...")
-    name_of_best_sn_match, name_of_best_hg_match, best_params, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, target_spectra, target_wl, target_name, show_plots)
+
+
+    name_of_best_sn_match, name_of_best_hg_match, best_params, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
 
     println("SN Name           : ", target_name)
     println("SN fit params     : ", round(best_params[1], digits = 4))

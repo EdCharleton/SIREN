@@ -229,7 +229,7 @@ host_galaxy_names = os.listdir(host_galaxy_directory)
 number_of_host_galaxies = len(host_galaxy_names)
 
 #Define the dust parameters
-extinction_range = np.arange(-0.2, 1, 0.1)
+extinction_range = np.arange(-.6, 3.0, 0.2)
 r_v = 3.1
 dust_law = "ccm89" #Use the CCM89 dust law (Cardelli, Clayton, Mathis 1989)
 
