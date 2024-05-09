@@ -1,10 +1,18 @@
 #------------------------------------------------------------
 #Import Packages
 #------------------------------------------------------------
+using Distributed
 
+if nworkers() == 1
+    addprocs(2)
+end
+
+
+
+@everywhere using Distributed
 
 #Define the code as a module
-module ClassifierFunctions
+@everywhere module ClassifierFunctions
 
     using Random
     using DataFrames
@@ -28,15 +36,15 @@ module ClassifierFunctions
     using Pkg
     using Conda
     using FITSIO
+    using ProgressMeter
     using Distributed
-
+    
     #using DuckDB
 
     matplotlib = pyimport("matplotlib")
     plt = pyimport("matplotlib.pyplot")
     spectres = pyimport("spectres")
     numpy = pyimport("numpy")
-
     
 
     rcParams = matplotlib[:rcParams]
@@ -287,52 +295,50 @@ module ClassifierFunctions
 
     #-------------------  fit_spectrum -------------------
 
-    """
-        fit_spectrum(spectra_to_fit, spectra_wl, filter_curve, filter_wl, pure_sn_spectra, sn_file_names, pure_hg_spectra, hg_file_names)
-
-    TBW
-    """
+    #This function uses multi core processing to speed up run time
+    
     function fit_spectrum(spectra_to_fit, spectra_to_fit_σ, spectra_wl, pure_sn_spectra, sn_file_names, sn_info, pure_hg_spectra, hg_file_names, hg_info, target_redshift)
-        #Generate empty matricies to store the different parameters returned from the fit
+        # Generate empty matrices to store the different parameters returned from the fit
         num_sn = length(pure_sn_spectra)
         num_hg = length(pure_hg_spectra)
 
-        #generate empty arrays to populate with the results of the fits
+        println("Loading in the spectra...")
+        # Generate empty arrays to populate with the results of the fits
         chi_squared_arr = fill(Float16(Inf), num_sn, num_hg)
         chi_squared_red_arr = fill(Float16(Inf), num_sn, num_hg)
         norm_arr = zeros(Float16, num_sn, num_hg, 2)
 
-        Threads.@threads for sn_i_idx in ProgressBar(1:num_sn)
+        println("Finished loading in the spectra, starting the fitting process...")
 
-            #For testing purposes. If the redshift is not zero, skip the supernova
+        for sn_i_idx in 1:num_sn
+
+            # For testing purposes. If the redshift is not zero, skip the supernova
             if sn_info["redshift"][sn_file_names[sn_i_idx]] != round(target_redshift, digits = 2) && round(target_redshift, digits = 2) < 10.0 && round(target_redshift, digits = 2) > 0.0
-               continue
-
+                continue
             end
 
-            sn_i = pure_sn_spectra[sn_i_idx] 
+            sn_i = pure_sn_spectra[sn_i_idx]
 
             sn_redshift = sn_info["redshift"][sn_file_names[sn_i_idx]]
             hg_indexes = findall(x -> hg_info["redshift"][x] == sn_redshift, hg_file_names)
             matching_z_hg_spectra = pure_hg_spectra[hg_indexes]
 
-            
-            #Iterate through all possible combinations of supernova (SN) and Host Galaxy (HG) spectra
+            # Iterate through all possible combinations of supernova (SN) and Host Galaxy (HG) spectra
             for hg_i_idx in eachindex(hg_indexes)
 
-                hg_i = matching_z_hg_spectra[hg_i_idx] 
+                hg_i = matching_z_hg_spectra[hg_i_idx]
 
                 norm_sn = calculate_B(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
                 norm_hg = calculate_C(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
 
-                convolved_pure_spectra =  (sn_i * norm_sn) .+ (hg_i * norm_hg)
+                convolved_pure_spectra = (sn_i * norm_sn) .+ (hg_i * norm_hg)
                 chi_squared = sum((spectra_to_fit .- convolved_pure_spectra).^2 ./ spectra_to_fit_σ.^2)
 
                 DoF = 2
                 chi_squared_arr[sn_i_idx, hg_indexes[hg_i_idx]] = chi_squared
                 chi_squared_red_arr[sn_i_idx, hg_indexes[hg_i_idx]] = chi_squared / (length(spectra_to_fit) - DoF)
-                norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 1] = norm_sn 
-                norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 2] = norm_hg 
+                norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 1] = norm_sn
+                norm_arr[sn_i_idx, hg_indexes[hg_i_idx], 2] = norm_hg
 
             end
         end
@@ -366,9 +372,18 @@ module ClassifierFunctions
         #Check for any emission lines and deweight them in the fit - for now to be plotted in orange
         emission_line, emission_line_wl = remove_galaxy_features(target_wl, altered_spectra, altered_spectra_σ)
 
-        #chi_squared,  chi_squared_red, norm_vals= fit_sn_hg(pure_sn_spectra_files, pure_hg_spectra_files, pure_sn_spectra_info, pure_hg_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_file_names, altered_spectra, (normalisation_guess_sn ), (normalisation_guess_hg))
-        chi_squared, chi_squared_red, norm_vals = fit_spectrum(altered_spectra, altered_spectra_σ, four_most_wl, pure_sn_spectra_files, pure_sn_spectra_file_names, pure_sn_spectra_info,pure_hg_spectra_files, pure_hg_spectra_file_names, pure_hg_spectra_info, target_redshift)
-    
+        #chi_squared, chi_squared_red, norm_vals = fit_spectrum(altered_spectra, altered_spectra_σ, four_most_wl, pure_sn_spectra_files, pure_sn_spectra_file_names, pure_sn_spectra_info,pure_hg_spectra_files, pure_hg_spectra_file_names, pure_hg_spectra_info, target_redshift)
+
+        # Call the function with the necessary arguments
+        result = @distributed (vcat) for i in 1:2
+            fit_spectrum(altered_spectra, altered_spectra_σ, four_most_wl, pure_sn_spectra_files, pure_sn_spectra_file_names, pure_sn_spectra_info,pure_hg_spectra_files, pure_hg_spectra_file_names, pure_hg_spectra_info, target_redshift)
+        end
+
+
+        chi_squared = result[1]
+        chi_squared_red = result[2]
+        norm_vals = result[3]
+
         best_indices = argmin(chi_squared)
         #top_5_indices = sortperm(chi_squared, rev = false, dims = 1)[1:5]
 
