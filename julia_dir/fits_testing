@@ -13,6 +13,8 @@ function read_fits_file(directory::String)
             hdr = read_header(f[1])
 
             spectra = read(f[1])
+            println(hdr)
+            err = read(f[2])
             wl = collect(hdr["CRVAL1"] - (hdr["CRPIX1"] * hdr["CDELT1"]) : hdr["CDELT1"] : (hdr["NAXIS1"] - hdr["CRPIX1"] - 1) * hdr["CDELT1"] + hdr["CRVAL1"])
             println(hdr)
             spec_min = minimum(spectra)
@@ -30,4 +32,4 @@ function read_fits_file(directory::String)
     
 end
 
-read_fits_file("real_spectra_dir/LS01490w.fits")
+read_fits_file("real_spectra_dir")

@@ -201,7 +201,7 @@ def create_plot(x_data, y_data, labels, title, x_label, y_label, save_path, save
 #Generate parameters for the sn cosmo values for 4MOST
 tau = np.linspace(-20, 50, 71)
 length_of_phase = len(tau)
-four_most_wl = np.arange(3790, 9530, 20)
+four_most_wl = np.arange(3800, 9500, 15)
 spectra_resolution = len(four_most_wl)
 
 model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr"])

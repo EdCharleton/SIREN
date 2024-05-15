@@ -87,12 +87,12 @@ for n in (target_spectra_names)
     println("Classifying ", target_name, "...")
 
 
-    name_of_best_sn_match, name_of_best_hg_match, best_params, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
+    best_params, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
 
     println("SN Name           : ", target_name)
-    println("SN fit params     : ", round(best_params[1], digits = 4))
-    println("HG fit params     : ", round(best_params[2], digits = 4))
-    println("χ^2 Reduced       : ", round(chi_red, digits = 4))
+    #println("SN fit params     : ", round(best_params[:, 1], digits = 4))
+    #4println("HG fit params     : ", round(best_params[:, 2], digits = 4))
+    #println("χ^2 Reduced       : ", round(chi_red[], digits = 4))
     println("----------------------------------------------")
 
 end
