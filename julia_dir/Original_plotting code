@@ -1,0 +1,88 @@
+
+
+
+for i in 1:5
+    # Create a single subplot
+    fig, axs = plt.subplots(nrows=1, ncols=1, figsize=(12, 8), dpi=300)
+
+    #Adjusting tick parameters for both subplots
+    axs.tick_params(axis="both", which="major", width=1, length=6, direction="in", bottom = true, top = true, left = true, right = true)
+    axs.tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom = true, top = true, left = true, right = true)
+    axs.minorticks_on()
+
+    plot_color = "red"
+    #Generate the best fit (made and the respective host galaxy and supernova components) for plotting
+    sn_component = (top_5_norm_params[i, 1] * pure_sn_spectra_files[top_5_indices[i, 1]])
+    hg_component = (top_5_norm_params[i, 2] * pure_hg_spectra_files[top_5_indices[i, 2]])
+
+    best_fit = sn_component .+ hg_component
+
+    # Plotting the data
+    axs.set_title(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i][1])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * ", HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * ", Phase = " * string(top_5_phase[i]) * " days" * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)))
+    axs.fill_between(original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12)
+    axs.fill_between(four_most_wl, (altered_spectra .- altered_spectra_σ)[:, 1], (altered_spectra .+ altered_spectra_σ)[:, 1], color="black", alpha=0.5)
+    axs.plot(original_wavelength, original_altered_spectra, label="Target Spectra", color="black", alpha = 0.2)
+    axs.plot(binned_plotting_wl, binned_plotting_spectra, label="Target Spectra", color="black", alpha = 0.7)
+    axs.plot(four_most_wl, best_fit, label="Best fit", color=plot_color)
+
+    plotting_emission_line = [binned_plotting_spectra[i-1:i+1] for i in 1:length(binned_plotting_spectra) if binned_plotting_wl[i] in emission_line_wl]
+    plotting_emission_line_wl = [binned_plotting_wl[i-1:i+1] for i in 1:length(binned_plotting_spectra) if binned_plotting_wl[i] in emission_line_wl]
+
+    for i in 1:length(plotting_emission_line)
+        axs.plot(plotting_emission_line_wl[i], plotting_emission_line[i], color="orange", linestyle = ":")
+    end
+
+    axs.plot(four_most_wl, hg_component, label="Pure HG", color="#D980FA", linestyle = "--")
+    axs.plot(four_most_wl, sn_component, label="Pure SN", color="#1289A7", linestyle = ":")
+    axs.set_xlabel("Wavelength " * "[" * L"\AA" * "]")
+    axs.set_ylabel("Flux [AU]")
+    axs.set_ylim(0, 1.1 * maximum(binned_plotting_spectra))
+    axs.legend(loc="center", bbox_to_anchor=(0.5, -0.1), ncol = 4)
+
+    #Add a second axis to display the rest wavelength
+    x_axis = axs.get_xticks()
+    rest_wavelength = x_axis ./ (1 + target_redshift)
+    plot_rest_wavelength = collect(rest_wavelength[1]:200:rest_wavelength[end])
+
+    axs2 = axs.twiny()
+    axs2.tick_params(axis="both", which="major", width=1, length=6, direction="in",  top = true)
+    axs2.tick_params(axis="both", which="minor", width=1, length=4, direction="in",  top = true)
+    axs2.minorticks_on()
+    axs2.set_xlabel("Wavelength " * "[" * L"\AA" * "]")
+
+    # Calculate appropriate tick positions for rest wavelengths
+    # Calculate the minimum and maximum rest wavelengths
+    min_rest_wavelength = floor(minimum(rest_wavelength))
+    max_rest_wavelength = ceil(maximum(rest_wavelength)) 
+
+    # Generate tick positions at intervals of 200 Angstroms
+    tick_positions = collect(min_rest_wavelength:1000:max_rest_wavelength)
+
+    # Set tick labels for the second x-axis
+    axs2.set_xticks(tick_positions)
+    axs2.set_xticklabels(["$(tick)" for tick in tick_positions])
+    axs2.set_xlim(min_rest_wavelength, max_rest_wavelength)
+
+    plotpath = joinpath("classifications_dir", "plots", string(SN_ID))
+    if !isdir(plotpath)
+        mkdir(plotpath)
+    end
+    plt.savefig(plotpath * "/" * string(SN_ID) * "_fit_" * string(i) * ".png")
+    plt.close()
+
+    #Plot just the supernova
+
+    supernova_residual = altered_spectra .- hg_component
+
+    fig, axs = plt.subplots(nrows=1, ncols=1, figsize=(12, 8), dpi=300)  # figsize adjusted for two plots
+    axs.tick_params(axis="both", which="major", width=1, length=6, direction="in", bottom = true, top = true, left = true, right = true)
+    axs.tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom = true, top = true, left = true, right = true)
+    axs.minorticks_on()
+
+    axs.set_title(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i][1])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * ", HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * ", Phase = " * string(top_5_phase[i]) * " days" * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)))
+    axs.plot(four_most_wl, supernova_residual, label="Supernova (Spectrum - Host)", color="black")
+    axs.set_xlabel("Wavelength " * "[" * L"\AA" * "]")
+    axs.set_ylabel("Flux [AU]")
+    axs.legend(loc="center", bbox_to_anchor=(0.5, -0.1), ncol = 1)
+    plt.savefig(plotpath * "/" * string(SN_ID) * "_fit_" * string(i) * "_supernova.png")
+    plt.close()

@@ -99,8 +99,8 @@ def host_galaxy_spectra_generator(hg_spectra, hg_wavelength, redshift, wl_range,
         output_spectra - rebinned and redshifted host galaxy spectra
         output_wl - wavelength of the rebinned and redshifted host galaxy spectra
     """
-    #rebin the spectra into 20 Angstrom bins
-    full_wl_range = np.arange(wl_range[0]-1520, wl_range[-1]+50, 20)
+    #rebin the spectra into 15 Angstrom bins
+    full_wl_range = np.arange(wl_range[0]-1520, wl_range[-1]+50, 15)
     output_spectra = spectres.spectres(full_wl_range, hg_wavelength, hg_spectra)
     #Redshift the spectra
 
@@ -194,6 +194,9 @@ def create_plot(x_data, y_data, labels, title, x_label, y_label, save_path, save
     plt.legend()
     plt.savefig(os.path.join(save_path, save_name))
     plt.close()
+
+
+ 
 #------------------------------------------------------------------------------------------------------------------------------#
 #------------------------------------------------------Main Code---------------------------------------------------------------#
 #------------------------------------------------------------------------------------------------------------------------------#
