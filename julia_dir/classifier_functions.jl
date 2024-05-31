@@ -27,6 +27,7 @@ module ClassifierFunctions
     using ProfileView
     using Pkg
     using Conda
+    using CSV
     using FITSIO
     using Distributed
 
@@ -136,7 +137,12 @@ module ClassifierFunctions
         for filename in readdir(directory)
             if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".asci") || endswith(filename, ".csv")
                 file_path = joinpath(directory, filename)
-                content = readdlm(file_path)
+
+                if endswith(filename, ".csv")
+                    content = CSV.read(file_path, DataFrame, delim = ",")
+                else 
+                    content = readdlm(file_path)
+                end
                 wl = content[:, 1]
                 spectra = content[:, 2] 
                 spec_min = minimum(spectra)
@@ -145,8 +151,15 @@ module ClassifierFunctions
                 end
                 spectra = spectra ./ maximum(spectra) .* 100
 
+                try
+                    spectra_σ = content[:, 3]
+                catch
+                    #println("No error provided for ", filename, ", setting error to root of the spectra")
+                    spectra_σ = sqrt.(spectra)
+                end
                 #if no error provided, spectra_σ is set to root of the spectra
-                spectra_σ = sqrt.(spectra)
+                spectra_σ = sqrt.(spectra_σ)
+
 
                 files_dict[filename] = (wl, spectra, spectra_σ)
 
@@ -157,7 +170,13 @@ module ClassifierFunctions
                 spectra_hdr = read_header(f[1])
 
                 spectra = read(f[1])
-                spectra_σ = read(f[2])
+
+                try
+                    spectra_σ = read(f[2])
+                catch
+                    spectra_σ = sqrt.(spectra)
+                end
+
                 spectra_σ = sqrt.(spectra_σ)
                 try
                     wl = collect(spectra_hdr["CRVAL1"] - (spectra_hdr["CRPIX1"] * spectra_hdr["CDELT1"]) : spectra_hdr["CDELT1"] : (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CDELT1"] + spectra_hdr["CRVAL1"])
@@ -193,15 +212,10 @@ module ClassifierFunctions
     function read_template_files(spectra_file_names, spectra_info, label)
         println("Loading in $label Spectra...")
         spectra_files = Vector{Array{Any}}(undef, length(spectra_file_names))
+        
         Threads.@threads for i in ProgressBar(eachindex(spectra_file_names))
             key = spectra_file_names[i]
             spectra_path = joinpath(spectra_info["path"][key], string(key))
-
-            #con = DBInterface.connect(DuckDB.DB)
-            #results = DBInterface.execute(con,  """SELECT * FROM read_parquet('$spectra_path')""")
-            #df = DataFrame((results))
-            #array = collect(df.spectra)
-            #spectra_files[i] = array
             spectra_files[i] = readdlm(spectra_path)
         end
 
@@ -217,11 +231,9 @@ module ClassifierFunctions
 
     function check_target_size(target_wl, template_wl, target_spectra, target_spectra_σ)
         #Function that checks if the target spectra Wavelength range is the same as the pure spectra, if it isnt, rebin the pure spectra to that of the target spectra
-        if target_wl[1] > template_wl[1] || target_wl[end] < template_wl[end]
-            println("Target spectra is not the same size as the template spectra, target is being rebinned to the template spectra")
-
-            new_spectrum, new_spectrum_σ = spectres.spectres(numpy.array(template_wl), numpy.array(target_wl), numpy.array(target_spectra), numpy.array(target_spectra_σ), verbose = false)
-        end        
+        #if target_wl[1] > template_wl[1] || target_wl[end] < template_wl[end]
+            #println("Target spectra is not the same size as the template spectra, target is being rebinned to the template spectra")
+        new_spectrum, new_spectrum_σ = spectres.spectres(numpy.array(template_wl), numpy.array(target_wl), numpy.array(target_spectra), numpy.array(target_spectra_σ), verbose = false)
 
         return template_wl, new_spectrum, new_spectrum_σ
 
@@ -231,17 +243,22 @@ module ClassifierFunctions
 
     function trim_nans(target_spectra, target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files)
 
-        valid_indices = findall(.!isnan.(target_spectra))
-        
-        # Trim arrays
-        target_spectra = target_spectra[valid_indices]
-        target_spectra_σ = target_spectra_σ[valid_indices]
-        template_wl = template_wl[valid_indices]
+        number_of_nans = sum(isnan.(target_spectra))
 
-        pure_sn_spectra_files = [pure_sn_spectra_files[i][valid_indices] for i in eachindex(pure_sn_spectra_files)]
-        pure_hg_spectra_files = [pure_hg_spectra_files[i][valid_indices] for i in eachindex(pure_hg_spectra_files)]
-        
-        return target_spectra,target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files
+        valid_indices = findall(.!isnan.(target_spectra))
+        if number_of_nans == 0 
+            return target_spectra, target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files
+        else
+            # Trim arrays
+            target_spectra = target_spectra[valid_indices]
+            target_spectra_σ = target_spectra_σ[valid_indices]
+            template_wl = template_wl[valid_indices]
+
+            pure_sn_spectra_files = [pure_sn_spectra_files[i][valid_indices] for i in eachindex(pure_sn_spectra_files)]
+            pure_hg_spectra_files = [pure_hg_spectra_files[i][valid_indices] for i in eachindex(pure_hg_spectra_files)]
+            
+            return target_spectra,target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files
+        end
     end
 
     #------------------- Remove Galaxy Features -------------------
@@ -289,6 +306,7 @@ module ClassifierFunctions
 
 
         for i in 1:3
+
             emission_line = fill(NaN, length(target_spectra))
             emission_line_wl = fill(NaN, length(target_spectra))
 
@@ -296,7 +314,7 @@ module ClassifierFunctions
             rolling_sigma = [std(target_spectra[i:i+window_size]) for i in 1:(length(target_spectra)-window_size)]
 
             for i in 1:length(target_spectra)-window_size
-                if target_spectra[i] > (rolling_average[i] + (2.5 * rolling_sigma[i]))
+                if target_spectra[i] > (rolling_average[i] + (2.6 * rolling_sigma[i]))
                     #println("Line Found at Wavelength: ", target_wl[i])
                     emission_line[i] = target_spectra[i]
                     emission_line_wl[i] = target_wl[i]
@@ -316,9 +334,13 @@ module ClassifierFunctions
             target_spectra[line_index] .= NaN
             
             #Trim the Emission lines from the target spectra
+            #println(i)
+            #println(size(target_spectra), size(target_wl), size(target_spectra_σ))
+
             target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files = trim_nans(target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files)
 
         end
+
         line_index = findall(.!isnan.(global_emission_line))
         global_emission_line = global_emission_line[line_index]
         global_emission_line_wl = global_emission_line_wl[line_index]
@@ -369,11 +391,14 @@ module ClassifierFunctions
             #For testing purposes. If the redshift is not zero, skip the supernova. Also includes OzDES parameters for no recorded redshifts
             if sn_info["redshift"][sn_file_names[sn_i_idx]] != round(target_redshift, digits = 2) && round(target_redshift, digits = 2) < 10.0 && round(target_redshift, digits = 2) > 0.0
                continue
+
+            elseif target_redshift == 999
+                
             end
 
-            if sn_info["Type"][sn_file_names[sn_i_idx]][1] != "Ia"
-                continue
-            end
+            #if sn_info["Type"][sn_file_names[sn_i_idx]][1] != "Ia"
+            #    continue 
+            #end
 
             sn_i = pure_sn_spectra[sn_i_idx] 
 
@@ -389,6 +414,7 @@ module ClassifierFunctions
 
                 norm_sn = calculate_B(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
                 norm_hg = calculate_C(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
+
 
                 convolved_pure_spectra =  (sn_i * norm_sn) .+ (hg_i * norm_hg)
                 chi_squared = sum((spectra_to_fit .- convolved_pure_spectra).^2 ./ spectra_to_fit_σ.^2)
@@ -427,20 +453,22 @@ module ClassifierFunctions
         original_altered_spectra = deepcopy(altered_spectra)
         original_altered_spectra_σ = deepcopy(altered_spectra_σ)
         original_wavelength = deepcopy(target_wl)
+
         
         #Check if the target spectra is the same size as the template spectra
         four_most_wl, altered_spectra, altered_spectra_σ = check_target_size(target_wl, four_most_wl, altered_spectra, altered_spectra_σ)
 
         #Trim NaNs
         altered_spectra, altered_spectra_σ, four_most_wl, pure_sn_spectra_files, pure_hg_spectra_files = trim_nans(altered_spectra, altered_spectra_σ, four_most_wl, pure_sn_spectra_files, pure_hg_spectra_files)
-        
         binned_plotting_spectra = deepcopy(altered_spectra)
         binned_plotting_spectra_σ = deepcopy(altered_spectra_σ)
         binned_plotting_wl = deepcopy(four_most_wl)
+    
 
         #Check for any emission lines and deweight them in the fit by setting them to NaNs
         emission_line, emission_line_wl, altered_spectra, altered_spectra_σ, four_most_wl, pure_sn_spectra_files, pure_hg_spectra_files = rolling_average_emission_removal(four_most_wl, altered_spectra, altered_spectra_σ, 10, pure_sn_spectra_files, pure_hg_spectra_files)
 
+        #(size(altered_spectra), size(altered_spectra_σ), size(four_most_wl), size(pure_sn_spectra_files[1]), size(pure_hg_spectra_files[1]))
         #chi_squared,  chi_squared_red, norm_vals= fit_sn_hg(pure_sn_spectra_files, pure_hg_spectra_files, pure_sn_spectra_info, pure_hg_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_file_names, altered_spectra, (normalisation_guess_sn ), (normalisation_guess_hg))
         top_5_chi, top_5_chi_red, top_5_norm_params, top_5_indices = fit_spectrum(altered_spectra, altered_spectra_σ, four_most_wl, pure_sn_spectra_files, pure_sn_spectra_file_names, pure_sn_spectra_info,pure_hg_spectra_files, pure_hg_spectra_file_names, pure_hg_spectra_info, target_redshift)
     
@@ -453,6 +481,8 @@ module ClassifierFunctions
         top_5_phase = [pure_sn_spectra_info["tau"][pure_sn_spectra_file_names[i]] for i in top_5_indices[:, 1]]
 
 
+        plotpath = "No Plot Saved"
+
         if show_plot == true
             # Adjust rcparams
             rcParams = matplotlib["rcParams"]
@@ -460,8 +490,22 @@ module ClassifierFunctions
 
             #Create multiple new plots of the top 5 fits ----------------------------------------------------------------
             for i in 1:5
+
+                if top_5_phase[i] == "N/A"
+                    top_5_phase[i] = pure_sn_spectra_info["t0"][pure_sn_spectra_file_names[top_5_indices[i, 1]]]
+                    phase_display = L", $t_0$ = " * string(top_5_phase[i]) * " days"
+                else
+                    phase_display = L", $\tau$ = " * string(top_5_phase[i]) * " days"
+                end
+
                 # Create a single subplot
                 fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(12, 15), dpi=300)
+
+                #Temporarily move all the wavelength axes to rest frame
+                #four_most_wl = four_most_wl ./ (1 + top_5_sn_redshift[i])
+                #binned_plotting_wl = binned_plotting_wl ./ (1 + top_5_sn_redshift[i])
+                #emission_line_wl = emission_line_wl ./ (1 + top_5_sn_redshift[i])
+                #original_wavelength = original_wavelength ./ (1 + top_5_sn_redshift[i])
 
                 plt.subplots_adjust(hspace=0.35, bottom = 0.05)
 
@@ -475,18 +519,19 @@ module ClassifierFunctions
                 sn_component = (top_5_norm_params[i, 1] * pure_sn_spectra_files[top_5_indices[i, 1]])
                 hg_component = (top_5_norm_params[i, 2] * pure_hg_spectra_files[top_5_indices[i, 2]])
 
+                redshift = top_5_sn_redshift[i]
+
                 best_fit = sn_component .+ hg_component
 
                 # Plotting the data
-
                 
-                fig.suptitle(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i][1])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * ", Phase = " * string(top_5_phase[i]) * " days" * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)), fontsize = 18)
+                fig.suptitle(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i][1])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * phase_display * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)), fontsize = 18)
                 
                 axs[1].set_title("Source, SNe, Host and Best Fit Spectrum")
                 axs[1].fill_between(original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12)
                 axs[1].fill_between(four_most_wl, (altered_spectra .- altered_spectra_σ)[:, 1], (altered_spectra .+ altered_spectra_σ)[:, 1], color="black", alpha=0.5)
-                axs[1].plot(original_wavelength, original_altered_spectra, label="Unbinned Source", color="black", alpha = 0.2)
-                axs[1].plot(binned_plotting_wl, binned_plotting_spectra, label="Binned Source", color="black", alpha = 0.7)
+                axs[1].plot(original_wavelength, original_altered_spectra, label="Original Spectrum", color="black", alpha = 0.2)
+                axs[1].plot(binned_plotting_wl, binned_plotting_spectra, label="Binned Spectrum", color="black", alpha = 0.7)
                 axs[1].plot(four_most_wl, best_fit, label="Best fit", color=plot_color)
 
                 plotting_emission_line = [binned_plotting_spectra[i-1:i+1] for i in 1:length(binned_plotting_spectra) if binned_plotting_wl[i] in emission_line_wl]
@@ -498,14 +543,15 @@ module ClassifierFunctions
 
                 axs[1].plot(four_most_wl, hg_component, label="Pure HG", color="#D980FA", linestyle = "--")
                 axs[1].plot(four_most_wl, sn_component, label="Pure SN", color="#1289A7", linestyle = ":")
-                axs[1].set_xlabel("Wavelength " * "[" * L"\AA" * "]")
+                axs[1].set_xlabel("Observed Wavelength " * "[" * L"\AA" * "]")
                 axs[1].set_ylabel("Flux [AU]")
+                axs[1].set_xlim(minimum(original_wavelength) -100, maximum(original_wavelength) + 100)
                 axs[1].set_ylim(0, 1.1 * maximum(binned_plotting_spectra))
-                axs[1].legend(loc="center", bbox_to_anchor=(0.5, -0.15), ncol = 4)
+                axs[1].legend(loc="center", bbox_to_anchor=(0.5, -.15), ncol = 4)
 
                 #Add a second axis to display the rest wavelength
-                x_axis = axs[1].get_xticks()
-                rest_wavelength = x_axis ./ (1 + target_redshift)
+                x_axis = collect(minimum(original_wavelength)-100:1:maximum(original_wavelength)+100)
+                rest_wavelength = x_axis ./ (1 + redshift)
 
                 axs2 = axs[1].twiny()
                 axs2.tick_params(axis="both", which="major", width=1, length=6, direction="in",  top = true)
@@ -515,15 +561,19 @@ module ClassifierFunctions
         
                 # Calculate appropriate tick positions for rest wavelengths
                 # Calculate the minimum and maximum rest wavelengths
-                min_rest_wavelength = floor(minimum(rest_wavelength))
-                max_rest_wavelength = ceil(maximum(rest_wavelength)) 
+                min_rest_wavelength = (minimum(rest_wavelength))
+                max_rest_wavelength = (maximum(rest_wavelength)) 
 
                 # Generate tick positions at intervals of 200 Angstroms
-                tick_positions = collect(min_rest_wavelength:1000:max_rest_wavelength)
+                tick_min = ceil(min_rest_wavelength / 1000) * 1000
+                tick_max = floor(max_rest_wavelength / 1000) * 1000
+
+                tick_positions = collect(tick_min:1000:tick_max)
+                tick_positions = round.(tick_positions, digits=0)
 
                 # Set tick labels for the second x-axis
                 axs2.set_xticks(tick_positions)
-                axs2.set_xticklabels(["$(tick)" for tick in tick_positions])
+                #axs2.set_xticklabels(["$(tick)" for tick in tick_positions])
                 axs2.set_xlim(min_rest_wavelength, max_rest_wavelength)
 
 
@@ -537,9 +587,12 @@ module ClassifierFunctions
 
                 axs[2].set_title("Supernova Residual (Source - Host)")
                 axs[2].plot(four_most_wl, supernova_residual, label="Supernova (Spectrum - Host)", color="black")
-                axs[2].set_xlabel("Wavelength " * "[" * L"\AA" * "]")
+                axs[2].plot(four_most_wl, sn_component, label="Pure SN", color="#1289A7")
+                axs[2].set_xlabel("Observed Wavelength " * "[" * L"\AA" * "]")
+                axs[2].set_xlim(minimum(original_wavelength) -100, maximum(original_wavelength) + 100)
                 axs[2].set_ylabel("Flux [AU]")
-                #axs[2].legend(loc="center", bbox_to_anchor=(0.5, -0.15), ncol = 1)
+                #axs[2].legend(loc="center", bbox_to_anchor=(0.5, -0.1), nrows = 1)
+
 
                 axs3 = axs[2].twiny()
                 axs3.tick_params(axis="both", which="major", width=1, length=6, direction="in",  top = true)
@@ -547,19 +600,98 @@ module ClassifierFunctions
                 axs3.minorticks_on()
                 axs3.set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
 
-                axs3.set_xticks(tick_positions)
-                axs3.set_xticklabels(["$(tick)" for tick in tick_positions])
-                axs3.set_xlim(min_rest_wavelength, max_rest_wavelength)
+                min_rest_wavelength = (minimum(rest_wavelength))
+                max_rest_wavelength = (maximum(rest_wavelength))
 
+                # Generate tick positions at intervals of 1000 Angstroms
+                #Start and finish the tick positions at integers of 1000
+                tick_positions = round.(tick_positions, digits=0)
+                axs3.set_xticks(tick_positions, labels = tick_positions)
+
+                #axs3.set_xticklabels(["$(tick)" for tick in tick_positions])
+                axs3.set_xlim(min_rest_wavelength, max_rest_wavelength)
+                
                 plotpath = joinpath("classifications_dir", "plots", string(SN_ID))
                 if !isdir(plotpath)
                     mkdir(plotpath)
-
                    
                 end
                 plt.savefig(plotpath * "/" * string(SN_ID) * "_fit_" * string(i) * ".png")
                 plt.close()
+                plt.clf()
 
+                #----------------------------------------------------------------------------------------------------------------
+
+                fig, axs = plt.subplots(nrows=1, ncols=1, figsize=(12, 8), dpi=300)
+                plt.subplots_adjust(top = 0.85, bottom = 0.15)
+
+                axs.tick_params(axis="both", which="major", width=1, length=6, direction="in", bottom = true, top = true, left = true, right = true)
+                axs.tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom = true, top = true, left = true, right = true)
+                axs.minorticks_on()
+
+                fig.suptitle(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i][1])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * phase_display * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)), fontsize = 18)
+
+                #axs.set_title("Source, SNe and Best Fit Spectrum")
+                axs.fill_between(original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12)
+                axs.fill_between(four_most_wl, (altered_spectra .- altered_spectra_σ)[:, 1], (altered_spectra .+ altered_spectra_σ)[:, 1], color="black", alpha=0.5)
+                axs.plot(original_wavelength, original_altered_spectra, label="Original Spectrum", color="black", alpha = 0.2)
+                axs.plot(binned_plotting_wl, binned_plotting_spectra, label="Binned Spectrum", color="black", alpha = 0.7)
+                axs.plot(four_most_wl, best_fit, label="Best fit", color=plot_color)
+
+                plotting_emission_line = [binned_plotting_spectra[i-1:i+1] for i in 1:length(binned_plotting_spectra) if binned_plotting_wl[i] in emission_line_wl]
+                plotting_emission_line_wl = [binned_plotting_wl[i-1:i+1] for i in 1:length(binned_plotting_spectra) if binned_plotting_wl[i] in emission_line_wl]
+
+                for i in eachindex(plotting_emission_line)
+                    axs.plot(plotting_emission_line_wl[i], plotting_emission_line[i], color="orange", linestyle = ":")
+                end
+
+                axs.set_xlabel("Observed Wavelength " * "[" * L"\AA" * "]")
+                axs.set_ylabel("Flux [AU]")
+                #axs.set_ylim(0, 1.1 * maximum(binned_plotting_spectra))
+
+                offset = minimum(original_altered_spectra)
+
+                offset = 30
+                supernova_residual = supernova_residual .- offset
+                sn_component = sn_component .- offset
+
+                axs.plot(four_most_wl, supernova_residual, label="Supernova (Spectrum - Host)", color="black")
+                axs.plot(four_most_wl, sn_component, label="Pure SN", color="#1289A7")
+                axs.set_xlim(minimum(original_wavelength) -100, maximum(original_wavelength) + 100)
+                axs.set_ylim(minimum(supernova_residual), 1.1 * maximum(binned_plotting_spectra))
+                axs.legend(loc="center", bbox_to_anchor=(0.5, -.15), ncol = 4)
+
+                #Add a second axis to display the rest wavelength
+                x_axis = collect(minimum(original_wavelength)-100:1:maximum(original_wavelength)+100)
+
+                rest_wavelength = x_axis ./ (1 + redshift)
+
+                axs2 = axs.twiny()
+                axs2.tick_params(axis="both", which="major", width=1, length=6, direction="in",  top = true)
+                axs2.tick_params(axis="both", which="minor", width=1, length=4, direction="in",  top = true)
+                axs2.minorticks_on()
+                axs2.set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
+        
+                # Calculate appropriate tick positions for rest wavelengths
+                # Calculate the minimum and maximum rest wavelengths
+                min_rest_wavelength = (minimum(rest_wavelength))
+                max_rest_wavelength = (maximum(rest_wavelength)) 
+
+                # Generate tick positions at intervals of 1000 Angstroms
+                tick_min = ceil(min_rest_wavelength / 1000) * 1000
+                tick_max = floor(max_rest_wavelength / 1000) * 1000
+
+                tick_positions = collect(tick_min:1000:tick_max)
+                tick_positions = round.(tick_positions, digits=0)
+
+                # Set tick labels for the second x-axis
+                axs2.set_xticks(tick_positions)
+                #axs2.set_xticklabels(["$(tick)" for tick in tick_positions])
+                axs2.set_xlim(min_rest_wavelength, max_rest_wavelength)
+
+                plt.savefig(plotpath * "/" * "sn_comp_" * string(SN_ID) * "_fit_" * string(i) * ".png")
+                plt.close()
+                plt.clf()   
 
             end
             
@@ -579,8 +711,11 @@ module ClassifierFunctions
 
         #sn_best_fit_name = pure_sn_spectra_file_names[best_indices[1]]
         #hg_best_fit_name = pure_hg_spectra_file_names[best_indices[2]]
+        best_chi = argmin(top_5_chi)
+        best_redshift = top_5_sn_redshift[best_chi]
+        best_type = top_5_sn_type[best_chi]
 
-        return  top_5_norm_params, top_5_chi_red
+        return  top_5_norm_params, top_5_chi_red, plotpath, best_redshift, best_type
     end
 
     export delete_folder_contents, adapative_binning, chi_squared_classifier, fit_sn_hg, fitting_func, fit_spectrum, read_file, read_target_spectra, read_template_files, check_target_size, trim_nans, calculate_B, calculate_C

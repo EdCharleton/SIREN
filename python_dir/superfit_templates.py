@@ -28,6 +28,8 @@ extinction_range = np.arange(-.1, .5, 0.1)
 #create new directories with the templates for each supernova type
 sn_template_dir = "sn_template_dir"
 if not os.path.exists(sn_template_dir):
+    #Delete durrent directory and everything in it if it exists
+
     os.makedirs(sn_template_dir)
     os.makedirs(sn_template_dir + "/metadata")
     for i in sn_types:
@@ -103,6 +105,7 @@ superfit_spectra_df = pd.DataFrame.from_dict(superfit_files_dict, orient = 'inde
 
 sn_filenames = np.array(superfit_spectra_df.index.values)
 np.savetxt(os.path.join(sn_template_dir, 'metadata', 'superfit_template_filenames.txt'), sn_filenames, delimiter=',', fmt='%s')
+superfit_spectra_df.to_json(os.path.join(sn_template_dir, 'metadata','superfit_sn_template_metadata.json'))
 
 
             

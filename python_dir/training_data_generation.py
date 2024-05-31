@@ -17,6 +17,7 @@ import extinction
 import pyarrow.parquet as pq
 import pyarrow as pa
 import duckdb
+import shutil
 
 print('---------------------------')
 print('Generating host galaxies...')
@@ -53,6 +54,9 @@ def generate_model(model_type, wl, redshift = 0.0):
     min_z = 0 if min_z < 0 else min_z
     #max_z = (wl[0]/min_wl) -1 for the maximum redshift allowed by sncosmo
     max_z = 0.6 #for the maximum redshift that will produce usable spectra from 4MOST
+
+    #print(model.maxtime())
+    #print(model.mintime())
 
     if redshift > max_z:
         print("Redshift is greater than the maximum redshift allowed by the model. Redshift has been set to the maximum redshift allowed by the model.")
@@ -195,6 +199,49 @@ def create_plot(x_data, y_data, labels, title, x_label, y_label, save_path, save
     plt.savefig(os.path.join(save_path, save_name))
     plt.close()
 
+def generate_phases(start_time, end_time, time_step):
+    """
+    Function that generates the phases of a model
+    Parameters:
+        model - SN Cosmo model
+        tau - the array of valid phases
+    Returns:
+        phases - phases of the model
+    """
+    tau = np.arange(start_time, end_time, time_step)
+    phases = []
+
+    if start_time == 1:
+        for i in tau:
+            if i > 40:
+                if i % 3 == 0:
+                    phases.append(i)
+                else:
+                    continue
+            if i < 10:
+                if i % 2 == 0:
+                    phases.append(i)
+                else:
+                    continue
+            else:
+                phases.append(i)
+
+
+    elif start_time < 0:
+        for i in tau:
+            if i < -10:
+                if i % 2 == 0:
+                    phases.append(i)
+                else:
+                    continue
+            elif i > 20:
+                if i % 3 == 0:
+                    phases.append(i)
+                else:
+                    continue
+            else:
+                phases.append(i)
+    return phases
 
  
 #------------------------------------------------------------------------------------------------------------------------------#
@@ -202,16 +249,38 @@ def create_plot(x_data, y_data, labels, title, x_label, y_label, save_path, save
 #------------------------------------------------------------------------------------------------------------------------------#
 
 #Generate parameters for the sn cosmo values for 4MOST
-tau = np.linspace(-20, 50, 71)
-length_of_phase = len(tau)
-four_most_wl = np.arange(3800, 9500, 15)
-spectra_resolution = len(four_most_wl)
 
-model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr"])
-sn_types = np.array(['Ia', 'II', 'Ic', 'Ib'])
+four_most_wl = np.arange(3800, 9515, 15)
+
+spectra_resolution = len(four_most_wl)
 
 #model_names = np.array(['salt3'])
 #sn_types = np.array(['Ia'])
+
+model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr", "nugent-sn91t", "nugent-sn91bg", "nugent-sn1a", "hsiao"])
+sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "91t-like", "91bg-like", "Ia", "Ia"])
+
+salt3_tau = generate_phases(-18, 50, 1) #Ia
+v19_2009kr_corr_tau = generate_phases(-10, 50, 1) #II
+v19_2004aw_corr_tau = generate_phases(-14, 50, 1) #Ic
+v19_2004gv_corr_tau = generate_phases(-20, 50, 1) #Ib
+nugent_sn91t_tau = generate_phases(1, 70, 1) #91t-like
+nugent_sn91bg_tau = generate_phases(1, 70, 1) #91bg-like
+nugent_sn1a_tau = generate_phases(1, 70, 1) #Ia
+hsiao_tau = generate_phases(-18, 50, 1) #Ia
+
+phases_dict = {
+    'salt3': salt3_tau,
+    'v19-2009kr-corr': v19_2009kr_corr_tau,
+    'v19-2004aw-corr': v19_2004aw_corr_tau,
+    'v19-2004gv-corr': v19_2004gv_corr_tau,
+    'nugent-sn91t': nugent_sn91t_tau,
+    'nugent-sn91bg': nugent_sn91bg_tau,
+    'nugent-sn1a': nugent_sn1a_tau,
+    'hsiao': hsiao_tau
+
+}
+
 
 pure_sn_dir = 'sn_template_dir'
 pure_hg_dir = 'hg_template_dir'
@@ -232,7 +301,7 @@ host_galaxy_names = os.listdir(host_galaxy_directory)
 number_of_host_galaxies = len(host_galaxy_names)
 
 #Define the dust parameters
-extinction_range = np.arange(-.6, 3.0, 0.2)
+extinction_range = np.arange(-.6, .6, 0.2) # Redenning equivalent to ~ -0.2 E(B-V) to 0.2 E(B-V)
 r_v = 3.1
 dust_law = "ccm89" #Use the CCM89 dust law (Cardelli, Clayton, Mathis 1989)
 
@@ -305,8 +374,11 @@ number_of_spectra = 1
 redshift_range = np.arange(0, 0.6, 0.01)
 pure_sn_spectra_dict = {}
 
+#Remove all the plots in the plots directory to avoid confusion
+shutil.rmtree(os.path.join("python_dir", 'plots'))
+
 print('---------------------------')
-print('Generating training data...')
+print('Generating Supernova...    ')
 print('---------------------------')
 
 pure_hg_spectra_df = pd.DataFrame.from_dict(pure_hg_spectra_dict, orient = 'index')
@@ -317,13 +389,19 @@ for i in tqdm(model_names):
         for sn_a_v in extinction_range:
             #Generate the model
             salt3_model, redshift = generate_model(i, four_most_wl, z_igx)
-            pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, length_of_phase, salt3_model, tau, four_most_wl)))
+
+            #Set up the phases
+            tau = phases_dict[i]  
+            
+            full_phases = np.arange(-20, 70, 1)
+            model_full_range = len(full_phases)
+            pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, four_most_wl)))
             for tau_idx in tau:
                 
                 vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range)*len(redshift_range))
                 hg_type_igx = 0
 
-                single_sn_spectrum = pure_sn_spectra[int(tau_idx - tau[0])]
+                single_sn_spectrum = pure_sn_spectra[int(tau_idx - full_phases[0])]
 
                 # Convert the variables to 'double' data type
                 four_most_wl = four_most_wl.astype('double')
@@ -362,19 +440,32 @@ for i in tqdm(model_names):
                 con.close()
                 """
 
+                #Create the plots of the individual spectra at redshift 0 and E(b-v) 0
+                if np.round(redshift, 2) == 0.0 and np.round(sn_a_v,2) == 0.0:
+                    os.makedirs(os.path.join("python_dir", 'plots', i), exist_ok=True)
+
+                    create_plot([four_most_wl], [output_sn_spectra], ['Spectra'], '{0} at time = {1}'.format(i, tau_idx), 'Wavelength (Angstroms)', 'Flux', os.path.join("python_dir", 'plots', i), '{0}_{1}'.format(i, tau_idx-tau[0]))
+
+                if tau[0] == 1:
+                    t0 = tau_idx
+                    tau_idx = "N/A"
+                else:
+                    t0 = "N/A"
+                        
                 #Save the pure sn spectra metadata to a dictionary
                 pure_sn_spectrum_info = {
                 'Model Type: ': i,
                 'Type': sn_types[np.where(model_names == i)],
                 'redshift': redshift,
                 'tau': tau_idx,
+                't0': t0,
                 'SN A_v': sn_a_v,
                 'path': str(os.path.join(pure_sn_dir, sn_type_path))}
                 pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
                 
                 number_of_templates = number_of_templates + 1
 
-print(number_of_templates)
+
 #Turn into a dataframe for exporting
 pure_sn_spectra_df = pd.DataFrame.from_dict(pure_sn_spectra_dict, orient = 'index')
 
@@ -391,5 +482,5 @@ pure_hg_spectra_df.to_json(os.path.join(pure_hg_dir, 'metadata', 'pure_hg_spectr
 
 
 print('---------------------------')
-print('  Training data generated  ')
+print('    Templates Generated    ')
 print('---------------------------')

@@ -56,8 +56,9 @@ println("----------------------------------------------")
 println("Loading in Templates...")
 println("----------------------------------------------")
 #---------------------------------------Temporary while working with OzDES data-----------------------------------------
-OzDES_metadata = CSV.read(joinpath("real_spectra_dir", "metadata","snspect.csv"), DataFrame, delim=',')
-all_target_names = OzDES_metadata[!, "TRANSIENT_NAME"]
+sn_metadata = CSV.read(joinpath("real_spectra_dir", "metadata","sn_data.csv"), DataFrame, delim=',')
+all_target_names = sn_metadata[!, "TRANSIENT_NAME"]
+all_target_redshift = sn_metadata[!, "REDSHIFT"]
 
 pure_sn_spectra_files = read_template_files(pure_sn_spectra_file_names, pure_sn_spectra_info, "Supernova Template")
 pure_hg_spectra_files = read_template_files(pure_hg_spectra_file_names, pure_hg_spectra_info, "Hg Template")
@@ -68,10 +69,12 @@ target_spectra_dict = read_target_spectra("real_spectra_dir")
 target_spectra_names = collect(keys(target_spectra_dict))
 
 #-------------------------------------------------- RUN THE CLASSIFIER --------------------------------------------------
-
 println("----------------------------------------------")
 println("Classifying ", length(target_spectra_names), " spectra with ", n_threads, " threads...")
 println("----------------------------------------------")
+
+
+
 
 for n in (target_spectra_names)
     target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
@@ -79,17 +82,16 @@ for n in (target_spectra_names)
 
     #When Working on the OzDES data
     target_index = findall(x -> occursin(x, target_name), all_target_names)
-    target_redshift = OzDES_metadata[target_index, "Z_GAL"]
-    if target_redshift[1] > 10.0 || target_redshift[1] < 0.0
-        target_redshift[1] = Float16(OzDES_metadata[target_index, "Z_SN"][1])
-    end
+    target_redshift = sn_metadata[target_index, "REDSHIFT"]
+
 
     println("Classifying ", target_name, "...")
-
-
-    best_params, chi_red = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
+    best_params, chi_red, path, z, type = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
 
     println("SN Name           : ", target_name)
+    println("Redshift          : ", round(z, digits = 2))
+    println("Path              : ", path)
+    println("Type              : ", type[1])
     #println("SN fit params     : ", round(best_params[:, 1], digits = 4))
     #4println("HG fit params     : ", round(best_params[:, 2], digits = 4))
     #println("χ^2 Reduced       : ", round(chi_red[], digits = 4))
