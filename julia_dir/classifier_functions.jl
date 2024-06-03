@@ -212,10 +212,15 @@ module ClassifierFunctions
     function read_template_files(spectra_file_names, spectra_info, label)
         println("Loading in $label Spectra...")
         spectra_files = Vector{Array{Any}}(undef, length(spectra_file_names))
-        
         Threads.@threads for i in ProgressBar(eachindex(spectra_file_names))
             key = spectra_file_names[i]
             spectra_path = joinpath(spectra_info["path"][key], string(key))
+
+            #con = DBInterface.connect(DuckDB.DB)
+            #results = DBInterface.execute(con,  """SELECT * FROM read_parquet('$spectra_path')""")
+            #df = DataFrame((results))
+            #array = collect(df.spectra)
+            #spectra_files[i] = array
             spectra_files[i] = readdlm(spectra_path)
         end
 
@@ -388,7 +393,7 @@ module ClassifierFunctions
 
         Threads.@threads for sn_i_idx in ProgressBar(1:num_sn)
 
-            #For testing purposes. If the redshift is not zero, skip the supernova. Also includes OzDES parameters for no recorded redshifts
+            #Skip all redshifts for sources where the redshift is provided and other redshifts don't match
             if sn_info["redshift"][sn_file_names[sn_i_idx]] != round(target_redshift, digits = 2) && round(target_redshift, digits = 2) < 10.0 && round(target_redshift, digits = 2) > 0.0
                continue
 

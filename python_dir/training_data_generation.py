@@ -250,7 +250,7 @@ def generate_phases(start_time, end_time, time_step):
 
 #Generate parameters for the sn cosmo values for 4MOST
 
-four_most_wl = np.arange(3800, 9515, 15)
+four_most_wl = np.arange(3800, 9515, 5)
 
 spectra_resolution = len(four_most_wl)
 
@@ -385,85 +385,86 @@ pure_hg_spectra_df = pd.DataFrame.from_dict(pure_hg_spectra_dict, orient = 'inde
 
 number_of_templates = 0
 for i in tqdm(model_names):
-    for z_igx in tqdm(redshift_range):
-        for sn_a_v in extinction_range:
-            #Generate the model
-            salt3_model, redshift = generate_model(i, four_most_wl, z_igx)
 
-            #Set up the phases
-            tau = phases_dict[i]  
+    for sn_a_v in extinction_range:
+        z_igx = 0.0
+        #Generate the model
+        salt3_model, redshift = generate_model(i, four_most_wl, z_igx)
+
+        #Set up the phases
+        tau = phases_dict[i]  
+        
+        full_phases = np.arange(-20, 70, 1)
+        model_full_range = len(full_phases)
+        pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, four_most_wl)))
+        for tau_idx in tau:
             
-            full_phases = np.arange(-20, 70, 1)
-            model_full_range = len(full_phases)
-            pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, four_most_wl)))
-            for tau_idx in tau:
-                
-                vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range)*len(redshift_range))
-                hg_type_igx = 0
+            vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range)*len(redshift_range))
+            hg_type_igx = 0
 
-                single_sn_spectrum = pure_sn_spectra[int(tau_idx - full_phases[0])]
+            single_sn_spectrum = pure_sn_spectra[int(tau_idx - full_phases[0])]
 
-                # Convert the variables to 'double' data type
-                four_most_wl = four_most_wl.astype('double')
-                pure_sn_spectrum = single_sn_spectrum.astype('double')
+            # Convert the variables to 'double' data type
+            four_most_wl = four_most_wl.astype('double')
+            pure_sn_spectrum = single_sn_spectrum.astype('double')
 
-                #Redden the supernova spectra
-                dusty_sn_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=sn_a_v, r_v=r_v), pure_sn_spectrum)
+            #Redden the supernova spectra
+            dusty_sn_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=sn_a_v, r_v=r_v), pure_sn_spectrum)
 
-                #Scale up to reduce precision 
-                sn_mean = np.mean(dusty_sn_spectra)
-                norm_sn_spectra = (dusty_sn_spectra / sn_mean * 100)
+            #Scale up to reduce precision 
+            sn_mean = np.mean(dusty_sn_spectra)
+            norm_sn_spectra = (dusty_sn_spectra / sn_mean * 100)
 
-                #Convert dusty_sn_spectra to 1D array of float 16
-                output_sn_spectra = norm_sn_spectra.astype('float16')
+            #Convert dusty_sn_spectra to 1D array of float 16
+            output_sn_spectra = norm_sn_spectra.astype('float16')
 
 
 
-                sn_type_path = ("type_{0}".format(sn_types[np.where(model_names == i)[0][0]]))
-                sn_template_file_name = ('{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2)))
+            sn_type_path = ("type_{0}".format(sn_types[np.where(model_names == i)[0][0]]))
+            sn_template_file_name = ('{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2)))
 
-                np.savetxt(os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name), output_sn_spectra, delimiter=',', fmt='%s')
+            np.savetxt(os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name), output_sn_spectra, delimiter=',', fmt='%s')
 
-                """
-                sn_parquet_file_path = os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name)
-                column_name = 'spectra'
-                single_sn_temp_df = pd.DataFrame({column_name: output_sn_spectra})
-                # Step 1: Convert Pandas DataFrame to DuckDB database table
-                con = duckdb.connect(':memory:')
-                con.register('single_sn_temp_df', single_sn_temp_df)
+            """
+            sn_parquet_file_path = os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name)
+            column_name = 'spectra'
+            single_sn_temp_df = pd.DataFrame({column_name: output_sn_spectra})
+            # Step 1: Convert Pandas DataFrame to DuckDB database table
+            con = duckdb.connect(':memory:')
+            con.register('single_sn_temp_df', single_sn_temp_df)
 
-                # Step 2: Write DuckDB database table to a Parquet file
-                con.execute("CREATE TABLE parquet_table AS SELECT * FROM single_sn_temp_df;")
-                con.execute("COPY parquet_table TO '{0}' (FORMAT 'parquet');".format(sn_parquet_file_path))
+            # Step 2: Write DuckDB database table to a Parquet file
+            con.execute("CREATE TABLE parquet_table AS SELECT * FROM single_sn_temp_df;")
+            con.execute("COPY parquet_table TO '{0}' (FORMAT 'parquet');".format(sn_parquet_file_path))
 
-                # Close the connection
-                con.close()
-                """
+            # Close the connection
+            con.close()
+            """
 
-                #Create the plots of the individual spectra at redshift 0 and E(b-v) 0
-                if np.round(redshift, 2) == 0.0 and np.round(sn_a_v,2) == 0.0:
-                    os.makedirs(os.path.join("python_dir", 'plots', i), exist_ok=True)
+            #Create the plots of the individual spectra at redshift 0 and E(b-v) 0
+            if np.round(redshift, 2) == 0.0 and np.round(sn_a_v,2) == 0.0:
+                os.makedirs(os.path.join("python_dir", 'plots', i), exist_ok=True)
 
-                    create_plot([four_most_wl], [output_sn_spectra], ['Spectra'], '{0} at time = {1}'.format(i, tau_idx), 'Wavelength (Angstroms)', 'Flux', os.path.join("python_dir", 'plots', i), '{0}_{1}'.format(i, tau_idx-tau[0]))
+                create_plot([four_most_wl], [output_sn_spectra], ['Spectra'], '{0} at time = {1}'.format(i, tau_idx), 'Wavelength (Angstroms)', 'Flux', os.path.join("python_dir", 'plots', i), '{0}_{1}'.format(i, tau_idx-tau[0]))
 
-                if tau[0] == 1:
-                    t0 = tau_idx
-                    tau_idx = "N/A"
-                else:
-                    t0 = "N/A"
-                        
-                #Save the pure sn spectra metadata to a dictionary
-                pure_sn_spectrum_info = {
-                'Model Type: ': i,
-                'Type': sn_types[np.where(model_names == i)],
-                'redshift': redshift,
-                'tau': tau_idx,
-                't0': t0,
-                'SN A_v': sn_a_v,
-                'path': str(os.path.join(pure_sn_dir, sn_type_path))}
-                pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
-                
-                number_of_templates = number_of_templates + 1
+            if tau[0] == 1:
+                t0 = tau_idx
+                tau_idx = "N/A"
+            else:
+                t0 = "N/A"
+                    
+            #Save the pure sn spectra metadata to a dictionary
+            pure_sn_spectrum_info = {
+            'Model Type: ': i,
+            'Type': sn_types[np.where(model_names == i)],
+            'redshift': redshift,
+            'tau': tau_idx,
+            't0': t0,
+            'SN A_v': sn_a_v,
+            'path': str(os.path.join(pure_sn_dir, sn_type_path))}
+            pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
+            
+            number_of_templates = number_of_templates + 1
 
 
 #Turn into a dataframe for exporting
