@@ -60,8 +60,8 @@ sn_metadata = CSV.read(joinpath("real_spectra_dir", "metadata","sn_data.csv"), D
 all_target_names = sn_metadata[!, "TRANSIENT_NAME"]
 all_target_redshift = sn_metadata[!, "REDSHIFT"]
 
-pure_sn_spectra_files = read_template_files(pure_sn_spectra_file_names, pure_sn_spectra_info, "Supernova Template")
-pure_hg_spectra_files = read_template_files(pure_hg_spectra_file_names, pure_hg_spectra_info, "Hg Template")
+sn_template_wavs, pure_sn_spectra_files = read_template_files(pure_sn_spectra_file_names, pure_sn_spectra_info, "Supernova Template")
+hg_template_wavs, pure_hg_spectra_files = read_template_files(pure_hg_spectra_file_names, pure_hg_spectra_info, "Hg Template")
 
 
 #read in target spectra
@@ -74,8 +74,6 @@ println("Classifying ", length(target_spectra_names), " spectra with ", n_thread
 println("----------------------------------------------")
 
 
-
-
 for n in (target_spectra_names)
     target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
     target_name = splitext(n)[1]
@@ -86,7 +84,7 @@ for n in (target_spectra_names)
 
 
     println("Classifying ", target_name, "...")
-    best_params, chi_red, path, z, type = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
+    best_params, chi_red, path, z, type = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
 
     println("SN Name           : ", target_name)
     println("Redshift          : ", round(z, digits = 2))

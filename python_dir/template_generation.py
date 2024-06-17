@@ -67,7 +67,7 @@ def generate_model(model_type, wl, redshift = 0.0):
 
     #Set the parameters for the model
     model.set(z = redshift)
-    return model, redshift
+    return model, redshift, min_wl, max_wl
 
 def sn_spectra_generator(resolution, time_scale, model, time_period, wavelength):
     """
@@ -104,16 +104,10 @@ def host_galaxy_spectra_generator(hg_spectra, hg_wavelength, redshift, wl_range,
         output_wl - wavelength of the rebinned and redshifted host galaxy spectra
     """
     #rebin the spectra into 15 Angstrom bins
-    full_wl_range = np.arange(wl_range[0]-1520, wl_range[-1]+50, 15)
+    full_wl_range = np.arange(wl_range[0], wl_range[-1]+15, 15)
     output_spectra = spectres.spectres(full_wl_range, hg_wavelength, hg_spectra)
-    #Redshift the spectra
 
-    rs_hg_wl = full_wl_range * (1 + redshift)
-    #Rebin the spectra to the same wavelength range as 4MOST
-    rs_output_spectra = spectres.spectres(wl_range, rs_hg_wl, output_spectra)
-
-    
-    return rs_output_spectra
+    return output_spectra
 
 def redden_spectra(spectra, wavelength):
     """
@@ -250,7 +244,7 @@ def generate_phases(start_time, end_time, time_step):
 
 #Generate parameters for the sn cosmo values for 4MOST
 
-four_most_wl = np.arange(3800, 9515, 5)
+four_most_wl = np.arange(2315, 9515, 15)
 
 spectra_resolution = len(four_most_wl)
 
@@ -306,67 +300,45 @@ r_v = 3.1
 dust_law = "ccm89" #Use the CCM89 dust law (Cardelli, Clayton, Mathis 1989)
 
 hg_ID = 1
+
 for hg_i in tqdm(range(number_of_host_galaxies)):
-    for hg_redshift in np.arange(0, 0.6, 0.01):
-        for hg_a_v in extinction_range:
-            host_galaxy_info = np.loadtxt(os.path.join(host_galaxy_directory, host_galaxy_names[hg_i]))
-            host_galaxy_wl = host_galaxy_info[:, 0]
-            host_galaxy_flux = host_galaxy_info[:, 1]
+    hg_redshift = 0.0
+    for hg_a_v in extinction_range:
+        host_galaxy_info = np.loadtxt(os.path.join(host_galaxy_directory, host_galaxy_names[hg_i]))
+        host_galaxy_wl = host_galaxy_info[:, 0]
+        host_galaxy_flux = host_galaxy_info[:, 1]
 
-            #Trim the spectra to the relevant wavelength range
-            pure_hg_spectra = host_galaxy_spectra_generator(host_galaxy_flux, host_galaxy_wl, hg_redshift, four_most_wl, hg_ID)
-            
-            # Convert the variables to 'double' data type
-            four_most_wl = four_most_wl.astype('double')
-            pure_hg_spectra = pure_hg_spectra.astype('double')
+        #Trim the spectra to the relevant wavelength range
+        pure_hg_spectra = host_galaxy_spectra_generator(host_galaxy_flux, host_galaxy_wl, hg_redshift, four_most_wl, hg_ID)
+        
+        # Convert the variables to 'double' data type
+        four_most_wl = four_most_wl.astype('double')
+        pure_hg_spectra = pure_hg_spectra.astype('double')
 
-            #Redden the host galaxy spectra
-            dusty_hg_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=hg_a_v, r_v=r_v), pure_hg_spectra)
+        #Redden the host galaxy spectra
+        dusty_hg_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=hg_a_v, r_v=r_v), pure_hg_spectra)
 
-            hg_mean = np.mean(dusty_hg_spectra)
-            norm_hg_spectra = (dusty_hg_spectra / hg_mean * 100)
+        hg_mean = np.mean(dusty_hg_spectra)
+        norm_hg_spectra = (dusty_hg_spectra / hg_mean * 100)
 
-            #Convert dusty_sn_spectra to 1D array of float 16
-            output_hg_spectra = norm_hg_spectra.astype('float16')
+        #Convert dusty_sn_spectra to 1D array of float 16
+        output_hg_spectra = norm_hg_spectra.astype('float16')
 
-            hg_template_file_name = ('phgs_{0}_rs_{1}_{2}.txt'.format(hg_i+1, np.round(hg_redshift, 3), np.round(hg_a_v, 3)))
+        hg_template_file_name = ('phgs_{0}_rs_{1}_{2}.txt'.format(hg_i+1, np.round(hg_redshift, 3), np.round(hg_a_v, 3)))
 
-            hg_parquet_file_path = os.path.join(pure_hg_dir, hg_template_file_name)
+        hg_parquet_file_path = os.path.join(pure_hg_dir, hg_template_file_name)
 
-            np.savetxt(os.path.join(pure_hg_dir, hg_template_file_name), output_hg_spectra, delimiter=',', fmt='%s')
+        output = np.column_stack((four_most_wl, output_hg_spectra))
 
-                        
-            """            
-            column_name = 'spectra'  # Specify the column name
-            single_hg_temp_df = pd.DataFrame({column_name: output_hg_spectra})
+        np.savetxt(os.path.join(pure_hg_dir, hg_template_file_name), output, delimiter=',', fmt='%s')
 
-            # Step 1: Convert Pandas DataFrame to DuckDB database table
-            con = duckdb.connect(':memory:')
-            con.register('single_hg_temp_df', single_hg_temp_df)
-
-            # Step 2: Write DuckDB database table to a Parquet file
-            con.execute("CREATE TABLE parquet_table AS SELECT * FROM single_hg_temp_df;")
-            con.execute("COPY parquet_table TO '{0}' (FORMAT 'parquet');".format(hg_parquet_file_path))
-
-            # Close the connection
-            con.close()
-
-            # Convert 'spectra' column to the correct PyArrow data type (float16)
-            arrow_type = pa.float16()
-            hg_column_data = pa.array(single_hg_temp_df['spectra'])
-            hg_table = pa.Table.from_arrays([hg_column_data], ['spectra'])
-
-            # Write the table to a Parquet file
-            pq.write_table(hg_table, hg_parquet_file_path)
-            """
-
-            pure_hg_spectrum_info = {
-                'redshift': hg_redshift,
-                'HG Type': host_galaxy_names[hg_i],
-                'HG A_v': hg_a_v,
-                'path': str(os.path.join(pure_hg_dir))}
-            pure_hg_spectra_dict[hg_template_file_name] = pure_hg_spectrum_info
-            #np.savetxt(os.path.join(pure_hg_dir, hg_template_file_name), dusty_hg_spectra, delimiter=',', fmt='%s')
+        pure_hg_spectrum_info = {
+            'redshift': hg_redshift,
+            'HG Type': host_galaxy_names[hg_i],
+            'HG A_v': hg_a_v,
+            'path': str(os.path.join(pure_hg_dir))}
+        pure_hg_spectra_dict[hg_template_file_name] = pure_hg_spectrum_info
+        #np.savetxt(os.path.join(pure_hg_dir, hg_template_file_name), dusty_hg_spectra, delimiter=',', fmt='%s')
 
 
 
@@ -375,7 +347,10 @@ redshift_range = np.arange(0, 0.6, 0.01)
 pure_sn_spectra_dict = {}
 
 #Remove all the plots in the plots directory to avoid confusion
-shutil.rmtree(os.path.join("python_dir", 'plots'))
+try:
+    shutil.rmtree(os.path.join("python_dir", 'plots'))
+except:
+    pass
 
 print('---------------------------')
 print('Generating Supernova...    ')
@@ -389,14 +364,26 @@ for i in tqdm(model_names):
     for sn_a_v in extinction_range:
         z_igx = 0.0
         #Generate the model
-        salt3_model, redshift = generate_model(i, four_most_wl, z_igx)
+        salt3_model, redshift, minimum_wl, maximum_wl = generate_model(i, four_most_wl, z_igx)
+        if minimum_wl < 2315:
+            minimum_wl = 2315
+        else:
+            minimum_wl = minimum_wl
+
+        if maximum_wl > 9515:
+            maximum_wl = 9515
+        else:
+            maximum_wl = maximum_wl
+
+        wavelength = np.arange(2315, 9515, 15)
+        spectra_resolution = len(wavelength)
 
         #Set up the phases
         tau = phases_dict[i]  
         
         full_phases = np.arange(-20, 70, 1)
         model_full_range = len(full_phases)
-        pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, four_most_wl)))
+        pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, wavelength)))
         for tau_idx in tau:
             
             vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range)*len(redshift_range))
@@ -406,10 +393,11 @@ for i in tqdm(model_names):
 
             # Convert the variables to 'double' data type
             four_most_wl = four_most_wl.astype('double')
+            wavelength = wavelength.astype('double')
             pure_sn_spectrum = single_sn_spectrum.astype('double')
 
             #Redden the supernova spectra
-            dusty_sn_spectra = extinction.apply(extinction.ccm89(four_most_wl, a_v=sn_a_v, r_v=r_v), pure_sn_spectrum)
+            dusty_sn_spectra = extinction.apply(extinction.ccm89(wavelength, a_v=sn_a_v, r_v=r_v), pure_sn_spectrum)
 
             #Scale up to reduce precision 
             sn_mean = np.mean(dusty_sn_spectra)
@@ -418,34 +406,20 @@ for i in tqdm(model_names):
             #Convert dusty_sn_spectra to 1D array of float 16
             output_sn_spectra = norm_sn_spectra.astype('float16')
 
-
-
             sn_type_path = ("type_{0}".format(sn_types[np.where(model_names == i)[0][0]]))
             sn_template_file_name = ('{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2)))
 
-            np.savetxt(os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name), output_sn_spectra, delimiter=',', fmt='%s')
 
-            """
-            sn_parquet_file_path = os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name)
-            column_name = 'spectra'
-            single_sn_temp_df = pd.DataFrame({column_name: output_sn_spectra})
-            # Step 1: Convert Pandas DataFrame to DuckDB database table
-            con = duckdb.connect(':memory:')
-            con.register('single_sn_temp_df', single_sn_temp_df)
+            #Save the wavelength and spectrum to a file
+            output = np.column_stack((wavelength, output_sn_spectra))
 
-            # Step 2: Write DuckDB database table to a Parquet file
-            con.execute("CREATE TABLE parquet_table AS SELECT * FROM single_sn_temp_df;")
-            con.execute("COPY parquet_table TO '{0}' (FORMAT 'parquet');".format(sn_parquet_file_path))
-
-            # Close the connection
-            con.close()
-            """
+            np.savetxt(os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name), output, delimiter=',', fmt='%s')
 
             #Create the plots of the individual spectra at redshift 0 and E(b-v) 0
             if np.round(redshift, 2) == 0.0 and np.round(sn_a_v,2) == 0.0:
                 os.makedirs(os.path.join("python_dir", 'plots', i), exist_ok=True)
 
-                create_plot([four_most_wl], [output_sn_spectra], ['Spectra'], '{0} at time = {1}'.format(i, tau_idx), 'Wavelength (Angstroms)', 'Flux', os.path.join("python_dir", 'plots', i), '{0}_{1}'.format(i, tau_idx-tau[0]))
+                create_plot([wavelength], [output_sn_spectra], ['Spectra'], '{0} at time = {1}'.format(i, tau_idx), 'Wavelength (Angstroms)', 'Flux', os.path.join("python_dir", 'plots', i), '{0}_{1}'.format(i, tau_idx-tau[0]))
 
             if tau[0] == 1:
                 t0 = tau_idx
