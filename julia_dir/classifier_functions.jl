@@ -101,6 +101,13 @@ module ClassifierFunctions
         return ci[perm[1:n]]
     end
 
+    #------------------------- find closest value --------------------------
+    
+    function find_closest_value(array, value)
+        idx = argmin(abs.(array .- value))
+        return array[idx]
+    end
+
     #--------------------- Read in files ---------------------
     """
         read_file(key, spectra_dict)
@@ -210,17 +217,6 @@ module ClassifierFunctions
         return wavs, spectra_files
     end
 
-
-    #------------------- Check target size-------------------
-
-    function check_target_size(target_wl, template_wl, target_spectra, target_spectra_σ)
-
-        new_spectrum, new_spectrum_σ = spectres.spectres(numpy.array(template_wl), numpy.array(target_wl), numpy.array(target_spectra), numpy.array(target_spectra_σ), verbose = false)
-
-        return template_wl, new_spectrum, new_spectrum_σ
-
-    end
-
     #------------------- Trim NaNs -------------------
 
     function trim_nans(target_spectra, target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files)
@@ -286,7 +282,6 @@ module ClassifierFunctions
         global_emission_line = fill(NaN, length(target_spectra))
         global_emission_line_wl = fill(NaN, length(target_spectra))
 
-
         for i in 1:3
 
             emission_line = fill(NaN, length(target_spectra))
@@ -297,7 +292,6 @@ module ClassifierFunctions
 
             for i in 1:length(target_spectra)-window_size
                 if target_spectra[i] > (rolling_average[i] + (2.6 * rolling_sigma[i]))
-                    #println("Line Found at Wavelength: ", target_wl[i])
                     emission_line[i] = target_spectra[i]
                     emission_line_wl[i] = target_wl[i]
                 end
@@ -314,10 +308,6 @@ module ClassifierFunctions
 
             #mask out the emission lines from the target spectra and the pure spectra
             target_spectra[line_index] .= NaN
-            
-            #Trim the Emission lines from the target spectra
-            #println(i)
-            #println(size(target_spectra), size(target_wl), size(target_spectra_σ))
 
             target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files = trim_nans(target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files)
 
@@ -364,6 +354,8 @@ module ClassifierFunctions
         #Generate an empy array of length 5 to store the top 5 χ2 values
         chi_squared_arr = [10.0^10, 11.0^10, 12.0^10, 13.0^10, 14.0^10]
         chi_squared_red_arr = [10.0^10, 11.0^10, 12.0^10, 13.0^10, 14.0^10]
+
+        #Empty arrays to store the fitting info
         norm_arr = zeros(Float16, 5, 2)
         redshift_vals = zeros(Float16, 5)
         indexes = zeros(Int, 5, 2)
@@ -375,13 +367,13 @@ module ClassifierFunctions
         binned_wl_arr = Vector{Array}(undef, 5)
         binned_spectra_σ_arr = Vector{Array}(undef, 5)
 
-
         #Loop through the redshift range of z=0.0 to z=0.6
         redshift_range = collect(0.01:0.01:0.6)
         for z in ProgressBar(redshift_range)
 
+            #Check if there is a provided redshift value
             if round(target_redshift, digits = 2) == 999
-                
+        
             else
                 if round(z, digits = 2) != round(target_redshift, digits = 2)
                     continue
@@ -390,20 +382,44 @@ module ClassifierFunctions
 
             pure_sn_spectra = deepcopy(sn_templates)
             pure_hg_spectra = deepcopy(hg_templates)
+            
+            full_template_wl_range = collect(2315:15:9000)
+
+            bottom_wl = 3800 / (1 + z)
+            bottom_wl = find_closest_value(full_template_wl_range, bottom_wl)
+
+            if bottom_wl < 2315
+                bottom_wl = 2315
+            end
+
+            top_wl = 8000 / (1 + z)
+            top_wl = find_closest_value(full_template_wl_range, top_wl)
+
+            full_template_wl = collect(bottom_wl:15:top_wl)
+
+            #trim the templates to the same wavelength range as the target spectra
+            common_elements = intersect(full_template_wl, full_template_wl_range)
+
+            # Find indices in full_template_wl_range
+            template_indicies = findall(x -> x in common_elements, full_template_wl_range)
+
+            pure_sn_spectra = [pure_sn_spectra[i][template_indicies] for i in eachindex(pure_sn_spectra)]
+            pure_hg_spectra = [pure_hg_spectra[i][template_indicies] for i in eachindex(pure_hg_spectra)]
 
             #Redshift the target spectra to rest wavelength
             de_redshifted_wl = spectra_wl ./ (1 + z)
-            four_most_wl = collect(2315:15:9500)
-            four_most_wl, spectra_to_fit, spectra_to_fit_σ = check_target_size(de_redshifted_wl, four_most_wl, input_spectra, input_spectra_σ)
-            spectra_to_fit, spectra_to_fit_σ, four_most_wl, pure_sn_spectra, pure_hg_spectra = trim_nans(spectra_to_fit, spectra_to_fit_σ, four_most_wl, pure_sn_spectra, pure_hg_spectra)
+
+            #Trim and rebin the spectra to fit to the wavelength range of the templates
+            spectra_to_fit, spectra_to_fit_σ = spectres.spectres(numpy.array(full_template_wl), numpy.array(de_redshifted_wl), numpy.array(input_spectra), numpy.array(input_spectra_σ), verbose = false)
+            spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra = trim_nans(spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra)
 
             #Copied purely for plotting
             binned_spectra = deepcopy(spectra_to_fit)
             binned_spectra_σ = deepcopy(spectra_to_fit_σ)
-            binned_wl = deepcopy(four_most_wl)
+            binned_wl = deepcopy(full_template_wl)
 
             #Remove any emission lines from the spectrum
-            emission_line, emission_line_wl, spectra_to_fit, spectra_to_fit_σ, four_most_wl, pure_sn_spectra, pure_hg_spectra = rolling_average_emission_removal(four_most_wl, spectra_to_fit, spectra_to_fit_σ, 12, pure_sn_spectra, pure_hg_spectra)
+            emission_line, emission_line_wl, spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra = rolling_average_emission_removal(full_template_wl, spectra_to_fit, spectra_to_fit_σ, 12, pure_sn_spectra, pure_hg_spectra)
 
             for sn_i_idx in (1:num_sn)
 
@@ -414,6 +430,7 @@ module ClassifierFunctions
 
                     hg_i = pure_hg_spectra[hg_i_idx] 
                     hg_i_wl = hg_wl[hg_i_idx]
+                
 
                     norm_sn = calculate_B(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
                     norm_hg = calculate_C(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
@@ -454,7 +471,6 @@ module ClassifierFunctions
     """
     function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, sn_template_wl, hg_template_wl, altered_spectra, target_wl, altered_spectra_σ, SN_ID, target_redshift, show_plot = false)
 
-        four_most_wl = collect(2315:15:9500)
         #Save the original target spectra
         original_altered_spectra = deepcopy(altered_spectra)
         original_altered_spectra_σ = deepcopy(altered_spectra_σ)
@@ -495,14 +511,16 @@ module ClassifierFunctions
                 binned_plotting_spectra_σ = binned_plotting_spectra_σ_arr[i]
 
                 #Generate lines for plotting
-                plotting_emission_line = [binned_plotting_spectra[i-1:i+1] for i in 1:length(binned_plotting_spectra) if binned_plotting_wl[i] in emission_line_wl]
-                plotting_emission_line_wl = [binned_plotting_wl[i-1:i+1] for i in 1:length(binned_plotting_spectra) if binned_plotting_wl[i] in emission_line_wl]
+                plotting_emission_line = [binned_plotting_spectra[i:i+1] for i in 1:length(binned_plotting_spectra)-1 if binned_plotting_wl[i] in emission_line_wl]
+                plotting_emission_line_wl = [binned_plotting_wl[i:i+1] for i in 1:length(binned_plotting_spectra)-1 if binned_plotting_wl[i] in emission_line_wl]
 
                 #Extract the best fit parameters
                 sn_component = (top_5_norm_params[i, 1] * pure_sn_spectra_files[top_5_indices[i, 1]])
                 hg_component = (top_5_norm_params[i, 2] * pure_hg_spectra_files[top_5_indices[i, 2]])
-                hg_component = spectres.spectres(numpy.array(binned_plotting_wl), numpy.array(four_most_wl), numpy.array(hg_component), verbose = false)
-                sn_component = spectres.spectres(numpy.array(binned_plotting_wl), numpy.array(four_most_wl), numpy.array(sn_component), verbose = false)
+
+                component_wl = collect(2315:15:9000)
+                hg_component = spectres.spectres(numpy.array(binned_plotting_wl), numpy.array(component_wl), numpy.array(hg_component), verbose = false)
+                sn_component = spectres.spectres(numpy.array(binned_plotting_wl), numpy.array(component_wl), numpy.array(sn_component), verbose = false)
 
                 best_fit = sn_component .+ hg_component
                 supernova_residual = binned_plotting_spectra .- hg_component
@@ -595,5 +613,5 @@ module ClassifierFunctions
         return  top_5_norm_params, top_5_chi_red, plotpath, best_redshift, best_type
     end
 
-    export delete_folder_contents, adapative_binning, chi_squared_classifier, fit_sn_hg, fitting_func, fit_spectrum, read_file, read_target_spectra, read_template_files, check_target_size, trim_nans, calculate_B, calculate_C
+    export delete_folder_contents, adapative_binning, chi_squared_classifier, fit_sn_hg, fitting_func, fit_spectrum, read_file, read_target_spectra, read_template_files, trim_nans, calculate_B, calculate_C
 end

@@ -244,7 +244,7 @@ def generate_phases(start_time, end_time, time_step):
 
 #Generate parameters for the sn cosmo values for 4MOST
 
-four_most_wl = np.arange(2315, 9515, 15)
+four_most_wl = np.arange(2315, 9015, 15)
 
 spectra_resolution = len(four_most_wl)
 
@@ -370,13 +370,14 @@ for i in tqdm(model_names):
         else:
             minimum_wl = minimum_wl
 
-        if maximum_wl > 9515:
-            maximum_wl = 9515
+        if maximum_wl > 9015:
+            maximum_wl = 9015
         else:
             maximum_wl = maximum_wl
 
-        wavelength = np.arange(2315, 9515, 15)
+        wavelength = np.arange(2315, 9015, 15)
         spectra_resolution = len(wavelength)
+        print(spectra_resolution)
 
         #Set up the phases
         tau = phases_dict[i]  
