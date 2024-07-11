@@ -141,7 +141,6 @@ module ClassifierFunctions
                 try
                     spectra_σ = content[:, 3]
                 catch
-                    #println("No error provided for ", filename, ", setting error to root of the spectra")
                     spectra_σ = sqrt.(spectra)
                 end
                 #if no error provided, spectra_σ is set to root of the spectra
@@ -219,13 +218,13 @@ module ClassifierFunctions
 
     #------------------- Trim NaNs -------------------
 
-    function trim_nans(target_spectra, target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files)
+    function trim_nans(target_spectra, target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files, supernova_wl, host_wl)
 
         number_of_nans = sum(isnan.(target_spectra))
 
         valid_indices = findall(.!isnan.(target_spectra))
         if number_of_nans == 0 
-            return target_spectra, target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files
+            return target_spectra, target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files, supernova_wl, host_wl
         else
             # Trim arrays
             target_spectra = target_spectra[valid_indices]
@@ -234,8 +233,11 @@ module ClassifierFunctions
 
             pure_sn_spectra_files = [pure_sn_spectra_files[i][valid_indices] for i in eachindex(pure_sn_spectra_files)]
             pure_hg_spectra_files = [pure_hg_spectra_files[i][valid_indices] for i in eachindex(pure_hg_spectra_files)]
+
+            supernova_wl = [supernova_wl[i][valid_indices] for i in eachindex(supernova_wl)]
+            host_wl = [host_wl[i][valid_indices] for i in eachindex(host_wl)]
             
-            return target_spectra,target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files
+            return target_spectra,target_spectra_σ, template_wl, pure_sn_spectra_files, pure_hg_spectra_files, supernova_wl, host_wl
         end
     end
 
@@ -278,7 +280,7 @@ module ClassifierFunctions
         return emission_line, emission_line_wl
     end
 
-    function rolling_average_emission_removal(target_wl, target_spectra, target_spectra_σ, window_size, pure_sn_spectra_files, pure_hg_spectra_files)
+    function rolling_average_emission_removal(target_wl, target_spectra, target_spectra_σ, window_size, pure_sn_spectra_files, pure_hg_spectra_files, supernova_wl, host_wl)
         global_emission_line = fill(NaN, length(target_spectra))
         global_emission_line_wl = fill(NaN, length(target_spectra))
 
@@ -309,7 +311,7 @@ module ClassifierFunctions
             #mask out the emission lines from the target spectra and the pure spectra
             target_spectra[line_index] .= NaN
 
-            target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files = trim_nans(target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files)
+            target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files, supernova_wl, host_wl = trim_nans(target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files, supernova_wl, host_wl)
 
         end
 
@@ -317,7 +319,111 @@ module ClassifierFunctions
         global_emission_line = global_emission_line[line_index]
         global_emission_line_wl = global_emission_line_wl[line_index]
 
-        return global_emission_line, global_emission_line_wl, target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files
+        return global_emission_line, global_emission_line_wl, target_spectra, target_spectra_σ, target_wl, pure_sn_spectra_files, pure_hg_spectra_files, supernova_wl, host_wl
+    end
+    
+
+    function process_spectra(sn_templates, hg_templates, hg_wavelength, sn_wavelength, z, sn_info, sn_file_names, spectra_wl, input_spectra, input_spectra_σ)
+        full_sn_spectra = deepcopy(sn_templates)
+        full_hg_spectra = deepcopy(hg_templates)
+        full_hg_wl = deepcopy(hg_wavelength)
+        full_sn_wl = deepcopy(sn_wavelength)
+        
+        full_template_wl_range = collect(2315:15:9000)
+    
+        bottom_wl = 3800 / (1 + z)
+        bottom_wl = find_closest_value(full_template_wl_range, bottom_wl)
+    
+        if bottom_wl < 2315
+            bottom_wl = 2315
+        end
+    
+        top_wl = 8000 / (1 + z)
+        top_wl = find_closest_value(full_template_wl_range, top_wl)
+    
+        full_template_wl = collect(bottom_wl:15:top_wl)
+    
+        # Trim the templates to the same wavelength range as the target spectra
+        common_elements = intersect(full_template_wl, full_template_wl_range)
+
+    
+        # Find indices in full_template_wl_range
+        template_indicies = findall(x -> x in common_elements, full_template_wl_range)
+    
+        # Find the standard and non-standard wavelength templates
+        standard_template_names = findall(x -> x == "Y", sn_info["Standard WL"])
+        common_names = intersect(sn_file_names, standard_template_names)
+        standard_template_indices = findall(x -> x in common_names, sn_file_names)
+        
+        non_standard_template_names = findall(x -> x == "N", sn_info["Standard WL"])
+        common_names = intersect(sn_file_names, non_standard_template_names)
+        non_standard_template_indices = findall(x -> x in common_names, sn_file_names)
+    
+        pure_sn_spectra = [full_sn_spectra[i][template_indicies] for i in standard_template_indices]
+        pure_hg_spectra = [full_hg_spectra[i][template_indicies] for i in eachindex(full_hg_spectra)]
+    
+        hg_wl = [full_hg_wl[i][template_indicies] for i in eachindex(full_hg_wl)]
+
+        sn_wl = Array{Any}(undef, length(full_sn_wl))
+        for wl in eachindex(full_sn_wl)
+            if wl in standard_template_indices
+                sn_wl[wl] = full_sn_wl[wl][template_indicies]
+            else
+                sn_wl[wl] = full_sn_wl[wl]
+            end
+        end
+    
+        # Redshift the target spectra to rest wavelength
+        de_redshifted_wl = spectra_wl ./ (1 + z)
+    
+        # Trim and rebin the spectra to fit to the wavelength range of the templates
+        spectra_to_fit, spectra_to_fit_σ = spectres.spectres(
+            numpy.array(full_template_wl), 
+            numpy.array(de_redshifted_wl), 
+            numpy.array(input_spectra), 
+            numpy.array(input_spectra_σ), 
+            verbose = false
+        )
+        
+        spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra, sn_wl, hg_wl = trim_nans(
+            spectra_to_fit, 
+            spectra_to_fit_σ, 
+            full_template_wl, 
+            pure_sn_spectra, 
+            pure_hg_spectra, 
+            sn_wl, 
+            hg_wl
+        )
+    
+        # Copied purely for plotting
+        binned_spectra = deepcopy(spectra_to_fit)
+        binned_spectra_σ = deepcopy(spectra_to_fit_σ)
+        binned_wl = deepcopy(full_template_wl)
+    
+        # Remove any emission lines from the spectrum
+        emission_line, emission_line_wl, spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra, sn_wl, hg_wl = rolling_average_emission_removal(
+            full_template_wl, 
+            spectra_to_fit, 
+            spectra_to_fit_σ, 
+            12, 
+            pure_sn_spectra, 
+            pure_hg_spectra, 
+            sn_wl, 
+            hg_wl
+        )
+    
+        deep_copy_spectra = deepcopy(spectra_to_fit)
+        deep_copy_spectra_σ = deepcopy(spectra_to_fit_σ)
+        deep_copy_wl = deepcopy(full_template_wl)
+    
+        return (
+            spectra_to_fit, spectra_to_fit_σ, full_template_wl, 
+            pure_sn_spectra, pure_hg_spectra, sn_wl, hg_wl, 
+            binned_spectra, binned_spectra_σ, binned_wl, 
+            deep_copy_spectra, deep_copy_spectra_σ, deep_copy_wl,
+            non_standard_template_indices, emission_line, emission_line_wl,
+            full_sn_spectra, full_hg_spectra, full_hg_wl, full_sn_wl
+        )
     end
     
 
@@ -346,7 +452,7 @@ module ClassifierFunctions
 
     TBW
     """
-    function fit_spectrum(input_spectra, input_spectra_σ, spectra_wl, sn_templates, sn_file_names, sn_info, hg_templates, hg_file_names, hg_info, sn_wl, hg_wl,target_redshift)
+    function fit_spectrum(input_spectra, input_spectra_σ, spectra_wl, sn_templates, sn_file_names, sn_info, hg_templates, hg_file_names, hg_info, sn_wavelength, hg_wavelength, target_redshift)
         #Generate empty matricies to store the different parameters returned from the fit
         num_sn = length(sn_templates)
         num_hg = length(hg_templates)
@@ -366,6 +472,12 @@ module ClassifierFunctions
         binned_spectra_arr = Vector{Array}(undef, 5)
         binned_wl_arr = Vector{Array}(undef, 5)
         binned_spectra_σ_arr = Vector{Array}(undef, 5)
+        best_fit_arr = Vector{Array}(undef, 5)
+        sn_component_arr = Vector{Array}(undef, 5)
+        hg_component_arr = Vector{Array}(undef, 5)
+        spectra_fit_region = Vector{Array}(undef, 5)
+        spectra_σ_fit_region = Vector{Array}(undef, 5)
+        spectra_wl_fit_region = Vector{Array}(undef, 5)
 
         #Loop through the redshift range of z=0.0 to z=0.6
         redshift_range = collect(0.01:0.01:0.6)
@@ -380,68 +492,84 @@ module ClassifierFunctions
                 end
             end
 
-            pure_sn_spectra = deepcopy(sn_templates)
-            pure_hg_spectra = deepcopy(hg_templates)
-            
-            full_template_wl_range = collect(2315:15:9000)
-
-            bottom_wl = 3800 / (1 + z)
-            bottom_wl = find_closest_value(full_template_wl_range, bottom_wl)
-
-            if bottom_wl < 2315
-                bottom_wl = 2315
-            end
-
-            top_wl = 8000 / (1 + z)
-            top_wl = find_closest_value(full_template_wl_range, top_wl)
-
-            full_template_wl = collect(bottom_wl:15:top_wl)
-
-            #trim the templates to the same wavelength range as the target spectra
-            common_elements = intersect(full_template_wl, full_template_wl_range)
-
-            # Find indices in full_template_wl_range
-            template_indicies = findall(x -> x in common_elements, full_template_wl_range)
-
-            pure_sn_spectra = [pure_sn_spectra[i][template_indicies] for i in eachindex(pure_sn_spectra)]
-            pure_hg_spectra = [pure_hg_spectra[i][template_indicies] for i in eachindex(pure_hg_spectra)]
-
-            #Redshift the target spectra to rest wavelength
-            de_redshifted_wl = spectra_wl ./ (1 + z)
-
-            #Trim and rebin the spectra to fit to the wavelength range of the templates
-            spectra_to_fit, spectra_to_fit_σ = spectres.spectres(numpy.array(full_template_wl), numpy.array(de_redshifted_wl), numpy.array(input_spectra), numpy.array(input_spectra_σ), verbose = false)
-            spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra = trim_nans(spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra)
-
-            #Copied purely for plotting
-            binned_spectra = deepcopy(spectra_to_fit)
-            binned_spectra_σ = deepcopy(spectra_to_fit_σ)
-            binned_wl = deepcopy(full_template_wl)
-
-            #Remove any emission lines from the spectrum
-            emission_line, emission_line_wl, spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra = rolling_average_emission_removal(full_template_wl, spectra_to_fit, spectra_to_fit_σ, 12, pure_sn_spectra, pure_hg_spectra)
+            #Process the spectra
+            spectra_to_fit, spectra_to_fit_σ, full_template_wl, pure_sn_spectra, pure_hg_spectra, sn_wl, hg_wl, binned_spectra, binned_spectra_σ, binned_wl, deep_copy_spectra, deep_copy_spectra_σ, deep_copy_wl, non_standard_template_indices, emission_line, emission_line_wl, full_sn_spectra, full_hg_spectra, full_hg_wl, full_sn_wl = process_spectra(
+                sn_templates, 
+                hg_templates, 
+                hg_wavelength, 
+                sn_wavelength, 
+                z, 
+                sn_info, 
+                sn_file_names, 
+                spectra_wl, 
+                input_spectra, 
+                input_spectra_σ
+            )
 
             for sn_i_idx in (1:num_sn)
+                λ_region = Array{Any}(undef)
+                spectra_to_fit = deepcopy(deep_copy_spectra)
+                spectra_to_fit_σ = deepcopy(deep_copy_spectra_σ)
+                full_template_wl = deepcopy(deep_copy_wl)
 
-                sn_i = pure_sn_spectra[sn_i_idx] 
-                sn_i_wl = sn_wl[sn_i_idx]
-                #Iterate through all possible combinations of supernova (SN) and Host Galaxy (HG) spectra
+
+                if sn_i_idx in non_standard_template_indices
+                    sn_i = full_sn_spectra[sn_i_idx]
+                    sn_i_wl = sn_wl[sn_i_idx]
+
+
+                    common_wavelengths = intersect(sn_i_wl, full_template_wl)
+
+                    sn_i = sn_i[findall(x -> x in common_wavelengths, sn_i_wl)]
+                    sn_i_wl = sn_i_wl[findall(x -> x in common_wavelengths, sn_i_wl)]
+
+                    spectra_to_fit = spectra_to_fit[findall(x -> x in common_wavelengths, full_template_wl)]
+                    spectra_to_fit_σ = spectra_to_fit_σ[findall(x -> x in common_wavelengths, full_template_wl)]
+
+                else
+                    sn_i = pure_sn_spectra[sn_i_idx] 
+                    sn_i_wl = sn_wl[sn_i_idx]
+                    #if z == round(.56, digits = 2)
+                        #plt.plot(full_template_wl, spectra_to_fit, label = "Target Spectra", color = "black")
+                        #plt.plot(sn_i_wl, sn_i, label = "Template Spectra", color = "red")
+                        #plt.show()
+                    #end
+                    
+                end
+
                 for hg_i_idx in 1:num_hg
 
-                    hg_i = pure_hg_spectra[hg_i_idx] 
-                    hg_i_wl = hg_wl[hg_i_idx]
-                
+                    if sn_i_idx in non_standard_template_indices
+                        hg_i = pure_hg_spectra[hg_i_idx]
+                        hg_i_wl = hg_wl[hg_i_idx]
+
+                        common_wavelengths = intersect(sn_i_wl, hg_i_wl)
+                        λ_region = hg_i_wl
+
+                        hg_i = hg_i[findall(x -> x in common_wavelengths, hg_i_wl)]
+                        hg_i_wl = hg_i_wl[findall(x -> x in common_wavelengths, hg_i_wl)]
+                        λ_region = hg_i_wl
+
+                    else
+                        hg_i = pure_hg_spectra[hg_i_idx] 
+                        hg_i_wl = hg_wl[hg_i_idx]
+                        λ_region = hg_i_wl
+
+                        #println(length(sn_i), " ", length(sn_i_wl), " ",length(hg_i), " ",length(hg_i_wl))
+                    end
+
 
                     norm_sn = calculate_B(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
                     norm_hg = calculate_C(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
 
                     convolved_pure_spectra =  (sn_i * norm_sn) .+ (hg_i * norm_hg)
+
                     chi_squared = sum((spectra_to_fit .- convolved_pure_spectra).^2 ./ spectra_to_fit_σ.^2)
                     DoF = 2
-                    chi_squared_red = chi_squared / (length(spectra_to_fit) - DoF)
+                    chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) * length(spectra_to_fit))
 
                     #if the value for chi-squared is less than the current minimum value, replace the minimum value with the new value
-                    if chi_squared < maximum(chi_squared_arr)
+                    if chi_squared_red < maximum(chi_squared_red_arr)
                         max_index = argmax(chi_squared_red_arr)
                         chi_squared_arr[max_index] = chi_squared
                         chi_squared_red_arr[max_index] = chi_squared_red
@@ -455,12 +583,21 @@ module ClassifierFunctions
                         binned_spectra_arr[max_index] = binned_spectra
                         binned_wl_arr[max_index] = binned_wl
                         binned_spectra_σ_arr[max_index] = binned_spectra_σ
+
+                        best_fit_arr[max_index] = convolved_pure_spectra
+                        sn_component_arr[max_index] = sn_i*norm_sn
+                        hg_component_arr[max_index] = hg_i*norm_hg
+                        spectra_fit_region[max_index] = spectra_to_fit
+                        spectra_σ_fit_region[max_index] = spectra_to_fit_σ
+                        spectra_wl_fit_region[max_index] = λ_region
+                        
+                        #println(round(length(spectra_to_fit), digits = 2), " ", round(chi_squared, digits = 2), " ", chi_squared_red, " ", z)
                         
                     end
                 end
             end
         end
-        return chi_squared_arr, chi_squared_red_arr, norm_arr, indexes, redshift_vals, emission_lines_wl, binned_spectra_arr, binned_wl_arr, binned_spectra_σ_arr
+        return chi_squared_arr, chi_squared_red_arr, norm_arr, indexes, redshift_vals, best_fit_arr, sn_component_arr, hg_component_arr, spectra_fit_region, spectra_σ_fit_region, spectra_wl_fit_region, emission_lines_wl, binned_spectra_arr, binned_wl_arr, binned_spectra_σ_arr
     end
 
     #------------------- Chi Squared Classifier -------------------
@@ -476,7 +613,19 @@ module ClassifierFunctions
         original_altered_spectra_σ = deepcopy(altered_spectra_σ)
         original_wavelenth = deepcopy(target_wl)
 
-        top_5_chi, top_5_chi_red, top_5_norm_params, top_5_indices, top_5_sn_redshift, emission_line_wl_arr, binned_plotting_spectra_arr, binned_plotting_wl_arr, binned_plotting_spectra_σ_arr = fit_spectrum(altered_spectra, altered_spectra_σ, target_wl, pure_sn_spectra_files, pure_sn_spectra_file_names, pure_sn_spectra_info, pure_hg_spectra_files, pure_hg_spectra_file_names, pure_hg_spectra_info, sn_template_wl, hg_template_wl, target_redshift)
+        top_5_chi, top_5_chi_red, top_5_norm_params, top_5_indices, top_5_sn_redshift, top_5_best_fits, top_5_sn_component, top_5_hg_component, top_5_spectra_fit_region, top_5_spectra_σ_fit_region, top_5_λ_fit_region, emission_line_wl_arr, binned_plotting_spectra_arr, binned_plotting_wl_arr, binned_plotting_spectra_σ_arr = fit_spectrum(
+            altered_spectra, 
+            altered_spectra_σ, 
+            target_wl, 
+            pure_sn_spectra_files, 
+            pure_sn_spectra_file_names, 
+            pure_sn_spectra_info, 
+            pure_hg_spectra_files, 
+            pure_hg_spectra_file_names, 
+            pure_hg_spectra_info, 
+            sn_template_wl, 
+            hg_template_wl, 
+            target_redshift)
 
         #Extract the best fit parameters
         top_5_sn_type = [pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[i]] for i in top_5_indices[:, 1]]
@@ -514,17 +663,6 @@ module ClassifierFunctions
                 plotting_emission_line = [binned_plotting_spectra[i:i+1] for i in 1:length(binned_plotting_spectra)-1 if binned_plotting_wl[i] in emission_line_wl]
                 plotting_emission_line_wl = [binned_plotting_wl[i:i+1] for i in 1:length(binned_plotting_spectra)-1 if binned_plotting_wl[i] in emission_line_wl]
 
-                #Extract the best fit parameters
-                sn_component = (top_5_norm_params[i, 1] * pure_sn_spectra_files[top_5_indices[i, 1]])
-                hg_component = (top_5_norm_params[i, 2] * pure_hg_spectra_files[top_5_indices[i, 2]])
-
-                component_wl = collect(2315:15:9000)
-                hg_component = spectres.spectres(numpy.array(binned_plotting_wl), numpy.array(component_wl), numpy.array(hg_component), verbose = false)
-                sn_component = spectres.spectres(numpy.array(binned_plotting_wl), numpy.array(component_wl), numpy.array(sn_component), verbose = false)
-
-                best_fit = sn_component .+ hg_component
-                supernova_residual = binned_plotting_spectra .- hg_component
-
                 plotting_original_wavelength = original_wavelenth ./ (1 + top_5_sn_redshift[i])
 
                 #----------------------------------------------------------------------------------------------------------------
@@ -536,15 +674,16 @@ module ClassifierFunctions
                 axs.tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom = true, top = true, left = true, right = true)
                 axs.minorticks_on()
 
-                fig.suptitle(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i][1])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * phase_display * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)), fontsize = 18)
+                fig.suptitle(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * phase_display * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)), fontsize = 18)
 
 
                 #axs.set_title("Source, SNe and Best Fit Spectrum")
                 axs.fill_between(plotting_original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12)
-                axs.fill_between(binned_plotting_wl, (binned_plotting_spectra .- binned_plotting_spectra_σ)[:, 1], (binned_plotting_spectra .+ binned_plotting_spectra_σ)[:, 1], color="black", alpha=0.5)
+
+                axs.fill_between(top_5_λ_fit_region[i], top_5_spectra_fit_region[i] .- top_5_spectra_σ_fit_region[i], top_5_spectra_fit_region[i] .+ top_5_spectra_σ_fit_region[i], color="black", alpha=0.5)
                 axs.plot(plotting_original_wavelength, original_altered_spectra, label="Original Spectrum", color="black", alpha = 0.2)
-                axs.plot(binned_plotting_wl, binned_plotting_spectra, label="Binned Spectrum", color="black", alpha = 0.7)
-                axs.plot(binned_plotting_wl, best_fit , label="Best fit", color="red")
+                axs.plot(top_5_λ_fit_region[i], top_5_spectra_fit_region[i], label="Binned Spectrum", color="black", alpha = 0.7)
+                axs.plot(top_5_λ_fit_region[i], top_5_best_fits[i] , label="Best fit", color="red")
 
                 for i in eachindex(plotting_emission_line)
                     axs.plot(plotting_emission_line_wl[i], plotting_emission_line[i], color="orange", linestyle = ":")
@@ -554,15 +693,14 @@ module ClassifierFunctions
                 axs.set_ylabel("Flux [AU]")
                 #axs.set_ylim(0, 1.1 * maximum(binned_plotting_spectra[i]))
 
-                offset = minimum(original_altered_spectra)
-
                 offset = 30
 
+                supernova_residual = top_5_spectra_fit_region[i] .- top_5_hg_component[i]
                 supernova_residual = supernova_residual .- offset
-                sn_component = sn_component .- offset
+                sn_component = top_5_sn_component[i] .- offset
 
-                axs.plot(binned_plotting_wl, supernova_residual, label="Supernova (Spectrum - Host)", color="black")
-                axs.plot(binned_plotting_wl, sn_component, label="Pure SN", color="#1289A7")
+                axs.plot(top_5_λ_fit_region[i], supernova_residual, label="Supernova (Spectrum - Host)", color="black")
+                axs.plot(top_5_λ_fit_region[i], sn_component, label="Pure SN", color="#1289A7")
                 axs.set_xlim(minimum(plotting_original_wavelength) -100, maximum(plotting_original_wavelength) + 100)
                 #axs.set_ylim(minimum(supernova_residual), 1.1 * maximum(binned_plotting_spectra))
                 axs.legend(loc="center", bbox_to_anchor=(0.5, -.15), ncol = 4)

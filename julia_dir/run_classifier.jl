@@ -30,19 +30,19 @@ n_threads = Threads.nthreads()
 four_most_wl = collect(3790:20:9510)
 
 using DataStructures: OrderedDict
-pure_sn_spectra_info = JSON.parsefile(joinpath("sn_template_dir", "metadata","pure_sn_spectra_data.json"), dicttype = OrderedDict)
-pure_sn_spectra_file_names = open(joinpath("sn_template_dir", "metadata","pure_sn_spectra_names.txt")) do file
+pure_sn_spectra_info = JSON.parsefile(joinpath("transient_template_dir", "metadata","pure_sn_spectra_data.json"), dicttype = OrderedDict)
+pure_sn_spectra_file_names = open(joinpath("transient_template_dir", "metadata","pure_sn_spectra_names.txt")) do file
     readlines(file)
 end
 
-pure_hg_spectra_info = JSON.parsefile(joinpath("hg_template_dir", "metadata","pure_hg_spectra_data.json"), dicttype = OrderedDict)
-pure_hg_spectra_file_names = open(joinpath("hg_template_dir", "metadata","pure_hg_spectra_names.txt")) do file
+pure_hg_spectra_info = JSON.parsefile(joinpath("host_template_dir", "metadata","pure_hg_spectra_data.json"), dicttype = OrderedDict)
+pure_hg_spectra_file_names = open(joinpath("host_template_dir", "metadata","pure_hg_spectra_names.txt")) do file
     readlines(file)
 end
 
 #----------------------------------------- READ IN TARGET AND TEMPLATE SPECTRA -----------------------------------------
 
-show_plots = true
+show_plots = true 
 delete_plot_folder_contents = false
 
 if delete_plot_folder_contents == true
@@ -89,7 +89,7 @@ for n in (target_spectra_names)
     println("SN Name           : ", target_name)
     println("Redshift          : ", round(z, digits = 2))
     println("Path              : ", path)
-    println("Type              : ", type[1])
+    println("Type              : ", type)
     #println("SN fit params     : ", round(best_params[:, 1], digits = 4))
     #4println("HG fit params     : ", round(best_params[:, 2], digits = 4))
     #println("χ^2 Reduced       : ", round(chi_red[], digits = 4))

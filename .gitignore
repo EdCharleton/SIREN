@@ -8,9 +8,13 @@ classifications_dir/
 host_galaxy_gen_dir/
 real_spectra_dir/
 sn_template_dir/
-hg_template_dir/
+host_template_dir/
 old_files/
 template_testing_info/
 sne_superfit/
 python_dir/plots/
 python_dir/Testing.py
+python_dir/transmission_funct.py
+julia_dir/transmission_filter.jl
+transient_template_dir/
+custom_transients_dir/
