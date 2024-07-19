@@ -17,6 +17,7 @@ using PyCall
 using Conda
 using LaTeXStrings
 using CSV
+using DataStructures: OrderedDict
 matplotlib = pyimport("matplotlib")
 plt = pyimport("matplotlib.pyplot")
 rcParams = matplotlib[:rcParams]
@@ -26,10 +27,6 @@ ENV["JULIA_NUM_THREADS"] = "auto"
 n_threads = Threads.nthreads()
 
 #---------------------------------------------- LOAD IN TEMPLATE METADATA ----------------------------------------------
-
-four_most_wl = collect(3790:20:9510)
-
-using DataStructures: OrderedDict
 pure_sn_spectra_info = JSON.parsefile(joinpath("transient_template_dir", "metadata","pure_sn_spectra_data.json"), dicttype = OrderedDict)
 pure_sn_spectra_file_names = open(joinpath("transient_template_dir", "metadata","pure_sn_spectra_names.txt")) do file
     readlines(file)
@@ -50,15 +47,15 @@ if delete_plot_folder_contents == true
     delete_folder_contents(path)
 end
 
-
-
 println("----------------------------------------------")
 println("Loading in Templates...")
 println("----------------------------------------------")
-#---------------------------------------Temporary while working with OzDES data-----------------------------------------
+
+#---------------------------------------Read in all the Transient Templates and metadata-----------------------------------------
 sn_metadata = CSV.read(joinpath("real_spectra_dir", "metadata","sn_data.csv"), DataFrame, delim=',')
 all_target_names = sn_metadata[!, "TRANSIENT_NAME"]
-all_target_redshift = sn_metadata[!, "REDSHIFT"]
+
+telluric_mask = readdlm(joinpath("real_spectra_dir", "metadata", "tellurics.txt"))
 
 sn_template_wavs, pure_sn_spectra_files = read_template_files(pure_sn_spectra_file_names, pure_sn_spectra_info, "Supernova Template")
 hg_template_wavs, pure_hg_spectra_files = read_template_files(pure_hg_spectra_file_names, pure_hg_spectra_info, "Hg Template")
@@ -81,10 +78,13 @@ for n in (target_spectra_names)
     #When Working on the OzDES data
     target_index = findall(x -> occursin(x, target_name), all_target_names)
     target_redshift = sn_metadata[target_index, "REDSHIFT"]
+    target_remove_telluric = sn_metadata[target_index, "REMOVE_TELLURIC"]
 
 
     println("Classifying ", target_name, "...")
-    best_params, chi_red, path, z, type = chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], show_plots)
+    best_params, chi_red, path, z, type = chi_squared_classifier(
+        pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files,
+         sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], telluric_mask, show_plots, target_remove_telluric)
 
     println("SN Name           : ", target_name)
     println("Redshift          : ", round(z, digits = 2))
