@@ -74,9 +74,8 @@ println("----------------------------------------------")
 for n in (target_spectra_names)
     target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
     target_name = splitext(n)[1]
-
     #When Working on the OzDES data
-    target_index = findall(x -> occursin(x, target_name), all_target_names)
+    target_index = findfirst(x -> x == target_name, all_target_names)
     target_redshift = sn_metadata[target_index, "REDSHIFT"]
     target_remove_telluric = sn_metadata[target_index, "REMOVE_TELLURIC"]
 

@@ -336,6 +336,7 @@ if generate_supernova == True:
     #list of SNCosmo models
     model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr", "nugent-sn91t", "nugent-sn91bg", "nugent-sn1a", "hsiao"])
     sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "91t-like", "91bg-like", "Ia", "Ia"])
+    galactic_source = np.array(['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N'])
 
     salt3_tau = generate_phases(-18, 50, 1) #Ia
     v19_2009kr_corr_tau = generate_phases(-10, 50, 1) #II
@@ -440,6 +441,7 @@ if generate_supernova == True:
                 't0': t0,
                 'SN A_v': sn_a_v,
                 'Standard WL': "Y",
+                "Galactic Source": galactic_source[np.where(model_names == i)[0][0]],
                 'path': str(os.path.join(pure_sn_dir, sn_type_path))}
                 pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
                 
@@ -456,6 +458,7 @@ template_wl = np.arange(3800, 8015, 15)
 
 #Generate other transient templates
 transient_types = np.array(['CV'])
+galactic_source = np.array(['Y'])
 
 for i in transient_types:
     os.makedirs(os.path.join(pure_sn_dir, i), exist_ok=True)
@@ -517,6 +520,7 @@ for type in tqdm(transient_types):
             't0': t0,
             'SN A_v': transient_av,
             'Standard WL': "N",
+            'Galactic Source': galactic_source[np.where(transient_types == type)[0][0]],
             'path': str(os.path.join(pure_sn_dir, type))}
             pure_sn_spectra_dict[transient_template_file_name] = pure_sn_spectrum_info
             

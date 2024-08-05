@@ -343,15 +343,14 @@ module ClassifierFunctions
     #------------------- Pre - Process Spectra -------------------
 
     function process_spectra(input_spectra_λ, input_spectra, input_spectra_σ, telluric_λ, remove_telluric)
-
-        if remove_telluric[1] == "Y"
+        if remove_telluric == "Y"
             # Remove telluric featues from the spectra
             input_spectra_λ, input_spectra, input_spectra_σ, plotting_telluric_x, plotting_telluric_y = remove_tellurics(
                 telluric_λ, 
                 input_spectra_λ,
                 input_spectra, 
                 input_spectra_σ)
-        else
+        elseif remove_telluric == "N"
             plotting_telluric_x = []
             plotting_telluric_y = []
         end
@@ -397,6 +396,7 @@ module ClassifierFunctions
             numpy.array(input_spectra_σ), 
             verbose = false
         )
+
 
         binned_spectra = deepcopy(output_spectra)
         binned_spectra_σ = deepcopy(output_spectra_σ)
@@ -499,10 +499,11 @@ module ClassifierFunctions
         spectra_to_fit = deepcopy(input_spectra)
         spectra_to_fit_σ = deepcopy(input_spectra_σ)
         spectra_λ = deepcopy(input_spectra_λ)
+        original_λ = deepcopy(input_spectra_λ)
         
 
         #pre process the spectra
-        spectra_to_fit_λ, spectra_to_fit, spectra_to_fit_σ, telluric_λ, emission_line_λ, emission_line= process_spectra(
+        processed_spectra_λ, processed_spectra, processed_spectra_σ, telluric_λ, emission_line_λ, emission_line= process_spectra(
             spectra_λ, 
             spectra_to_fit, 
             spectra_to_fit_σ, 
@@ -513,9 +514,14 @@ module ClassifierFunctions
 
         #Loop through the redshift range of z=0.0 to z=0.6
         redshift_range = collect(0.00:0.01:0.6)
-        for z in (redshift_range)
+        for z in ProgressBar(redshift_range)
+
+            spectra_to_fit = deepcopy(processed_spectra)
+            spectra_to_fit_σ = deepcopy(processed_spectra_σ)
+            spectra_to_fit_λ = deepcopy(processed_spectra_λ)
 
             #Check if there is a provided redshift value
+
             if round(target_redshift, digits = 2) == 999
         
             else
@@ -536,18 +542,26 @@ module ClassifierFunctions
                 sn_file_names, 
                 hg_templates, 
                 z, 
-                hg_wavelength, input_spectra_λ)
+                hg_wavelength, original_λ)
             
 
             deep_copy_spectra = deepcopy(spectra_to_fit)
             deep_copy_spectra_σ = deepcopy(spectra_to_fit_σ)
             deep_copy_λ = deepcopy(spectra_to_fit_λ)
 
+            reentrant_lock = ReentrantLock()
+
             for sn_i_idx in (1:num_sn)
                 λ_region = Array{Any}(undef)
                 spectra_to_fit = deepcopy(deep_copy_spectra)
                 spectra_to_fit_σ = deepcopy(deep_copy_spectra_σ)
                 full_template_λ= deepcopy(deep_copy_λ)
+
+                if sn_info["Galactic Source"][sn_file_names[sn_i_idx]] == "Y"
+                    if z != 0.0
+                        continue
+                    end
+                end
 
 
                 if sn_i_idx in non_standard_template_indices
@@ -595,9 +609,10 @@ module ClassifierFunctions
 
                     chi_squared = sum((spectra_to_fit .- convolved_pure_spectra).^2 ./ spectra_to_fit_σ.^2)
                     DoF = 2
-                    chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) * length(spectra_to_fit))
+                    #chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) * length(spectra_to_fit))
+                    chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) )
 
-                    #if the value for chi-squared is less than the current minimum value, replace the minimum value with the new value
+
                     if chi_squared_red < maximum(chi_squared_red_arr)
                         max_index = argmax(chi_squared_red_arr)
                         chi_squared_arr[max_index] = chi_squared
@@ -616,11 +631,11 @@ module ClassifierFunctions
                         binned_spectra_σ_arr[max_index] = binned_spectra_σ
 
                         best_fit_arr[max_index] = convolved_pure_spectra
-                        sn_component_arr[max_index] = sn_i*norm_sn
-                        hg_component_arr[max_index] = hg_i*norm_hg
+                        sn_component_arr[max_index] = sn_i * norm_sn
+                        hg_component_arr[max_index] = hg_i * norm_hg
                         spectra_fit_region[max_index] = spectra_to_fit
                         spectra_σ_fit_region[max_index] = spectra_to_fit_σ
-                        spectra_λ_fit_region[max_index] = λ_region            
+                        spectra_λ_fit_region[max_index] = λ_region
                     end
                 end
             end
@@ -735,7 +750,12 @@ module ClassifierFunctions
 
                 axs.set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
                 axs.set_ylabel("Flux [AU]")
-                #axs.set_ylim(0, 1.1 * maximum(binned_plotting_spectra[i]))
+                plotting_nans = isnan.(binned_plotting_spectra)
+                max_array = (binned_plotting_spectra[.!plotting_nans])
+                max_σ_array = (binned_plotting_spectra_σ[.!plotting_nans])
+                axis_min = minimum(max_array .- max_σ_array) * 1.1
+                axis_max = maximum(max_array .+ max_σ_array) * 1.1
+                axs.set_ylim(axis_min, axis_max)
 
                 offset = 30
 
