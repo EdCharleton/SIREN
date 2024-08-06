@@ -18,3 +18,5 @@ python_dir/transmission_funct.py
 julia_dir/transmission_filter.jl
 transient_template_dir/
 custom_transients_dir/
+python_dir/.DS_Store
+.DS_Store

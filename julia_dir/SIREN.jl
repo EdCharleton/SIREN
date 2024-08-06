@@ -1,5 +1,5 @@
 #---------------------------------------------- IMPORT PACKAGES --------------------------------------------------------
-include("classifier_functions.jl")
+include("SIREN_functions.jl")
 using .ClassifierFunctions
 using Pkg
 using DataStructures
