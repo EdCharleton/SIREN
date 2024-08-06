@@ -469,68 +469,58 @@ module ClassifierFunctions
 
     TBW
     """
+
+
     function fit_spectrum(input_spectra, input_spectra_σ, input_spectra_λ, sn_templates, sn_file_names, sn_info, hg_templates, hg_file_names, hg_info, sn_wavelength, hg_wavelength, target_redshift, telluric_λ, remove_telluric)
-        #Generate empty matricies to store the different parameters returned from the fit
+        num_threads = Threads.nthreads()
         num_sn = length(sn_templates)
         num_hg = length(hg_templates)
-
-        #Generate an empy array of length 5 to store the top 5 χ2 values
-        chi_squared_arr = [10.0^10, 11.0^10, 12.0^10, 13.0^10, 14.0^10]
-        chi_squared_red_arr = [10.0^10, 11.0^10, 12.0^10, 13.0^10, 14.0^10]
-
-        #Empty arrays to store the fitting info
-        norm_arr = zeros(Float16, 5, 2)
-        redshift_vals = zeros(Float16, 5)
-        indexes = zeros(Int, 5, 2)
-        emission_lines = Vector{Array}(undef, 5)
-        emission_lines_λ= Vector{Array}(undef, 5)
-
-        #The empty arrays to store the binned spectra
-        binned_spectra_arr = Vector{Array}(undef, 5)
-        binned_λ_arr = Vector{Array}(undef, 5)
-        binned_spectra_σ_arr = Vector{Array}(undef, 5)
-        best_fit_arr = Vector{Array}(undef, 5)
-        sn_component_arr = Vector{Array}(undef, 5)
-        hg_component_arr = Vector{Array}(undef, 5)
-        spectra_fit_region = Vector{Array}(undef, 5)
-        spectra_σ_fit_region = Vector{Array}(undef, 5)
-        spectra_λ_fit_region = Vector{Array}(undef, 5)
-
+    
+        chi_squared_arr = fill(10.0^10, num_threads, 5)
+        chi_squared_red_arr = fill(10.0^10, num_threads, 5)
+    
+        norm_arr = zeros(Float16, num_threads, 5, 2)
+        redshift_vals = zeros(Float16, num_threads, 5)
+        indexes = zeros(Int, num_threads, 5, 2)
+        emission_lines = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        emission_lines_λ = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+    
+        binned_spectra_arr = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        binned_λ_arr = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        binned_spectra_σ_arr = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        best_fit_arr = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        sn_component_arr = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        hg_component_arr = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        spectra_fit_region = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        spectra_σ_fit_region = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+        spectra_λ_fit_region = Array{Vector{Float64}, 2}(undef, num_threads, 5)
+    
         spectra_to_fit = deepcopy(input_spectra)
         spectra_to_fit_σ = deepcopy(input_spectra_σ)
         spectra_λ = deepcopy(input_spectra_λ)
         original_λ = deepcopy(input_spectra_λ)
         
-
-        #pre process the spectra
-        processed_spectra_λ, processed_spectra, processed_spectra_σ, telluric_λ, emission_line_λ, emission_line= process_spectra(
+        processed_spectra_λ, processed_spectra, processed_spectra_σ, telluric_λ, emission_line_λ, emission_line = process_spectra(
             spectra_λ, 
             spectra_to_fit, 
             spectra_to_fit_σ, 
             telluric_λ,
             remove_telluric
         )
-
-
-        #Loop through the redshift range of z=0.0 to z=0.6
+    
         redshift_range = collect(0.00:0.01:0.6)
+    
         for z in ProgressBar(redshift_range)
-
             spectra_to_fit = deepcopy(processed_spectra)
             spectra_to_fit_σ = deepcopy(processed_spectra_σ)
             spectra_to_fit_λ = deepcopy(processed_spectra_λ)
-
-            #Check if there is a provided redshift value
-
-            if round(target_redshift, digits = 2) == 999
-        
-            else
+    
+            if round(target_redshift, digits = 2) != 999
                 if round(z, digits = 2) != round(target_redshift, digits = 2)
                     continue
                 end
             end
-
-            #Redshift the spectra
+    
             spectra_to_fit, spectra_to_fit_σ, spectra_to_fit_λ, pure_sn_spectra, pure_hg_spectra, sn_λ, hg_λ, 
             standard_template_indices, non_standard_template_indices, binned_spectra, binned_spectra_σ, binned_spectra_λ = redshift_spectra(
                 spectra_to_fit_λ, 
@@ -542,106 +532,119 @@ module ClassifierFunctions
                 sn_file_names, 
                 hg_templates, 
                 z, 
-                hg_wavelength, original_λ)
-            
-
+                hg_wavelength, original_λ
+            )
+    
             deep_copy_spectra = deepcopy(spectra_to_fit)
             deep_copy_spectra_σ = deepcopy(spectra_to_fit_σ)
             deep_copy_λ = deepcopy(spectra_to_fit_λ)
-
-            reentrant_lock = ReentrantLock()
-
-            for sn_i_idx in (1:num_sn)
+    
+            Threads.@threads for sn_i_idx in 1:num_sn
+                thread_id = Threads.threadid()
                 λ_region = Array{Any}(undef)
                 spectra_to_fit = deepcopy(deep_copy_spectra)
                 spectra_to_fit_σ = deepcopy(deep_copy_spectra_σ)
-                full_template_λ= deepcopy(deep_copy_λ)
-
+                full_template_λ = deepcopy(deep_copy_λ)
+    
                 if sn_info["Galactic Source"][sn_file_names[sn_i_idx]] == "Y"
                     if z != 0.0
                         continue
                     end
                 end
-
-
+    
                 if sn_i_idx in non_standard_template_indices
                     sn_i = sn_templates[sn_i_idx]
-                    sn_i_λ= sn_λ[sn_i_idx]
-
-
+                    sn_i_λ = sn_λ[sn_i_idx]
+    
                     common_wavelengths = intersect(sn_i_λ, full_template_λ)
-
+    
                     sn_i = sn_i[findall(x -> x in common_wavelengths, sn_i_λ)]
-                    sn_i_λ= sn_i_λ[findall(x -> x in common_wavelengths, sn_i_λ)]
-
+                    sn_i_λ = sn_i_λ[findall(x -> x in common_wavelengths, sn_i_λ)]
+    
                     spectra_to_fit = spectra_to_fit[findall(x -> x in common_wavelengths, full_template_λ)]
                     spectra_to_fit_σ = spectra_to_fit_σ[findall(x -> x in common_wavelengths, full_template_λ)]
-
                 else
                     sn_i = pure_sn_spectra[sn_i_idx] 
-                    sn_i_λ= sn_λ[sn_i_idx]
-                    
+                    sn_i_λ = sn_λ[sn_i_idx]
                 end
-
+    
                 for hg_i_idx in 1:num_hg
-
                     if sn_i_idx in non_standard_template_indices
                         hg_i = pure_hg_spectra[hg_i_idx]
-                        hg_i_λ= hg_λ[hg_i_idx]
-
+                        hg_i_λ = hg_λ[hg_i_idx]
+    
                         common_wavelengths = intersect(sn_i_λ, hg_i_λ)
                         λ_region = hg_i_λ
-
+    
                         hg_i = hg_i[findall(x -> x in common_wavelengths, hg_i_λ)]
-                        hg_i_λ= hg_i_λ[findall(x -> x in common_wavelengths, hg_i_λ)]
+                        hg_i_λ = hg_i_λ[findall(x -> x in common_wavelengths, hg_i_λ)]
                         λ_region = hg_i_λ
-
                     else
                         hg_i = pure_hg_spectra[hg_i_idx] 
-                        hg_i_λ= hg_λ[hg_i_idx]
+                        hg_i_λ = hg_λ[hg_i_idx]
                         λ_region = hg_i_λ
                     end
-
+    
                     norm_sn = calculate_B(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
                     norm_hg = calculate_C(spectra_to_fit, sn_i, hg_i, spectra_to_fit_σ)
-
-                    convolved_pure_spectra =  (sn_i * norm_sn) .+ (hg_i * norm_hg)
-
+    
+                    convolved_pure_spectra = (sn_i * norm_sn) .+ (hg_i * norm_hg)
+    
                     chi_squared = sum((spectra_to_fit .- convolved_pure_spectra).^2 ./ spectra_to_fit_σ.^2)
                     DoF = 2
-                    #chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) * length(spectra_to_fit))
-                    chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) )
-
-
-                    if chi_squared_red < maximum(chi_squared_red_arr)
-                        max_index = argmax(chi_squared_red_arr)
-                        chi_squared_arr[max_index] = chi_squared
-                        chi_squared_red_arr[max_index] = chi_squared_red
-                        norm_arr[max_index, 1] = norm_sn
-                        norm_arr[max_index, 2] = norm_hg
-                        indexes[max_index, 1] = sn_i_idx
-                        indexes[max_index, 2] = hg_i_idx
-                        redshift_vals[max_index] = z
-
-                        emission_lines[max_index] = emission_line
-                        emission_lines_λ[max_index] = emission_line_λ
-
-                        binned_spectra_arr[max_index] = binned_spectra
-                        binned_λ_arr[max_index] = binned_spectra_λ
-                        binned_spectra_σ_arr[max_index] = binned_spectra_σ
-
-                        best_fit_arr[max_index] = convolved_pure_spectra
-                        sn_component_arr[max_index] = sn_i * norm_sn
-                        hg_component_arr[max_index] = hg_i * norm_hg
-                        spectra_fit_region[max_index] = spectra_to_fit
-                        spectra_σ_fit_region[max_index] = spectra_to_fit_σ
-                        spectra_λ_fit_region[max_index] = λ_region
+                    chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF))
+    
+                    if chi_squared_red < maximum(chi_squared_red_arr[thread_id, :])
+                        max_index = argmax(chi_squared_red_arr[thread_id, :])
+                        chi_squared_arr[thread_id, max_index] = chi_squared
+                        chi_squared_red_arr[thread_id, max_index] = chi_squared_red
+                        norm_arr[thread_id, max_index, 1] = norm_sn
+                        norm_arr[thread_id, max_index, 2] = norm_hg
+                        indexes[thread_id, max_index, 1] = sn_i_idx
+                        indexes[thread_id, max_index, 2] = hg_i_idx
+                        redshift_vals[thread_id, max_index] = z
+    
+                        emission_lines[thread_id, max_index] = emission_line
+                        emission_lines_λ[thread_id, max_index] = emission_line_λ
+    
+                        binned_spectra_arr[thread_id, max_index] = binned_spectra
+                        binned_λ_arr[thread_id, max_index] = binned_spectra_λ
+                        binned_spectra_σ_arr[thread_id, max_index] = binned_spectra_σ
+    
+                        best_fit_arr[thread_id, max_index] = convolved_pure_spectra
+                        sn_component_arr[thread_id, max_index] = sn_i * norm_sn
+                        hg_component_arr[thread_id, max_index] = hg_i * norm_hg
+                        spectra_fit_region[thread_id, max_index] = spectra_to_fit
+                        spectra_σ_fit_region[thread_id, max_index] = spectra_to_fit_σ
+                        spectra_λ_fit_region[thread_id, max_index] = λ_region
                     end
                 end
             end
         end
-        return chi_squared_arr, chi_squared_red_arr, norm_arr, indexes, redshift_vals, best_fit_arr, sn_component_arr, hg_component_arr, spectra_fit_region, spectra_σ_fit_region, spectra_λ_fit_region, emission_lines_λ, binned_spectra_arr, binned_λ_arr, binned_spectra_σ_arr, telluric_λ
+    
+        # Combine results from all threads
+        combined_chi_squared_arr = vec(chi_squared_arr)
+        combined_chi_squared_red_arr = vec(chi_squared_red_arr)
+        combined_norm_arr = reshape(norm_arr, :, 2)
+        combined_indexes = reshape(indexes, :, 2)
+        combined_redshift_vals = vec(redshift_vals)
+        combined_emission_lines = vec(emission_lines)
+        combined_emission_lines_λ = vec(emission_lines_λ)
+        combined_binned_spectra_arr = vec(binned_spectra_arr)
+        combined_binned_λ_arr = vec(binned_λ_arr)
+        combined_binned_spectra_σ_arr = vec(binned_spectra_σ_arr)
+        combined_best_fit_arr = vec(best_fit_arr)
+        combined_sn_component_arr = vec(sn_component_arr)
+        combined_hg_component_arr = vec(hg_component_arr)
+        combined_spectra_fit_region = vec(spectra_fit_region)
+        combined_spectra_σ_fit_region = vec(spectra_σ_fit_region)
+        combined_spectra_λ_fit_region = vec(spectra_λ_fit_region)
+    
+        return combined_chi_squared_arr, combined_chi_squared_red_arr, combined_norm_arr, combined_indexes, combined_redshift_vals, combined_emission_lines, combined_emission_lines_λ, combined_binned_spectra_arr, combined_binned_λ_arr, combined_binned_spectra_σ_arr, combined_best_fit_arr, combined_sn_component_arr, combined_hg_component_arr, combined_spectra_fit_region, combined_spectra_σ_fit_region, combined_spectra_λ_fit_region
     end
+    
+    
+
 
     #------------------- Chi Squared Classifier -------------------
         """

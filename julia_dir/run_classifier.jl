@@ -13,7 +13,7 @@ using BenchmarkTools
 using ProgressBars
 using Plots
 using LsqFit
-using PyCall
+using PyCall  
 using Conda
 using LaTeXStrings
 using CSV
@@ -23,8 +23,9 @@ plt = pyimport("matplotlib.pyplot")
 rcParams = matplotlib[:rcParams]
 
 #Set up threading for julia
-ENV["JULIA_NUM_THREADS"] = "auto"
+ENV["JULIA_NUM_THREADS"] = 1
 n_threads = Threads.nthreads()
+n_threads = 1
 
 #---------------------------------------------- LOAD IN TEMPLATE METADATA ----------------------------------------------
 pure_sn_spectra_info = JSON.parsefile(joinpath("transient_template_dir", "metadata","pure_sn_spectra_data.json"), dicttype = OrderedDict)
