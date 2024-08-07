@@ -35,10 +35,7 @@ module ClassifierFunctions
 
     matplotlib = pyimport("matplotlib")
     plt = pyimport("matplotlib.pyplot")
-    spectres = pyimport("spectres")
     numpy = pyimport("numpy")
-
-    
 
     rcParams = matplotlib[:rcParams]
     
@@ -198,14 +195,14 @@ module ClassifierFunctions
     function read_template_files(spectra_file_names, spectra_info, label)
         println("Loading in $label Spectra...")
         spectra_files = Vector{Array{Any}}(undef, length(spectra_file_names))
-        wavs = Vector{Array{Any}}(undef, length(spectra_file_names))
+        λ = Vector{Array{Any}}(undef, length(spectra_file_names))
 
         Threads.@threads for i in ProgressBar(eachindex(spectra_file_names))
             key = spectra_file_names[i]
             spectra_path = joinpath(spectra_info["path"][key], string(key))
 
             content = CSV.read(spectra_path, DataFrame, delim = ",", header = false)
-            wavs[i] = content[:, 1]
+            λ[i] = content[:, 1]
             spectra_files[i] = content[:, 2]
         end
 
@@ -213,7 +210,7 @@ module ClassifierFunctions
         spec_means = [mean(spectra_files[i]) for i in eachindex(spectra_files)]
         spectra_files = (spectra_files ./ spec_means .* 100)
 
-        return wavs, spectra_files
+        return λ, spectra_files
     end
 
     #------------------- Trim NaNs -------------------
@@ -231,14 +228,99 @@ module ClassifierFunctions
             output_spectra_σ = input_spectra_σ[valid_indices]
             output_spectra_λ = input_spectra_λ[valid_indices]
 
-            #output_transient_templates = [input_transient_templates[i][valid_indices] for i in eachindex(input_transient_templates)]
-            #output_host_templates = [input_host_templates[i][valid_indices] for i in eachindex(input_host_templates)]
-
-            #output_transient_templates_λ = [input_transient_templates_λ[i][valid_indices] for i in eachindex(input_transient_templates_λ)]
-            #output_host_templates_λ = [input_host_templates_λ[i][valid_indices] for i in eachindex(input_host_templates_λ)]
-            
-            #return output_spectra, output_spectra_σ, output_spectra_λ, output_transient_templates, output_host_templates, output_transient_templates_λ, output_host_templates_λ
             return output_spectra, output_spectra_σ, output_spectra_λ
+        end
+    end
+
+    #------------------- Spectral Resampler -------------------
+
+    function make_bins(λ)
+        edges = zeros(Float64, length(λ) + 1)
+        widths = zeros(Float64, length(λ))
+        edges[1] = λ[1] - (λ[2] - λ[1]) / 2
+        widths[end] = (λ[end] - λ[end - 1])
+        edges[end] = λ[end] + (λ[end] - λ[end - 1]) / 2
+        edges[2:end-1] = (λ[2:end] .+ λ[1:end-1]) / 2
+        widths[1:end-1] = edges[2:end-1] .- edges[1:end-2]
+    
+        return edges, widths
+    end
+    
+    function spectral_resampler(new_λ, old_λ, old_fluxes, old_errs = nothing, fill = nothing, verbose = true)
+        old_edges, old_widths = make_bins(old_λ)
+        new_edges, new_widths = make_bins(new_λ)
+    
+        new_fluxes = zeros(size(old_fluxes)[1:end-1]..., size(new_λ)...)
+    
+        if old_errs !== nothing
+            if size(old_errs) != size(old_fluxes)
+                throw(error("If specified, spec_errs must be the same shape as spec_fluxes."))
+            else
+                new_errs = copy(new_fluxes)
+            end
+        end
+    
+        start = 0
+        stop = 0
+        warned = false
+    
+        for j in 1:size(new_λ, 1)
+            if (new_edges[j] < old_edges[1]) || (new_edges[j+1] > old_edges[end])
+                new_fluxes[:, :, j] .= fill
+    
+                if old_errs !== nothing
+                    new_errs[:, :, j] .= fill
+                end
+    
+                if (j == 1 || j == size(new_λ, 1)) && verbose && !warned
+                    warned = true
+                    println("New_λ contains values outside the range in spec_λ, new_fluxes and new_errs will be filled with the value set in the 'fill' keyword argument. \n")
+                end
+                continue
+            end
+    
+            while old_edges[start+1] <= new_edges[j]
+                start += 1
+            end
+    
+            while old_edges[stop+1] < new_edges[j+1]
+                stop += 1
+            end
+            #println(start, " ", stop)
+    
+            if stop == start
+                new_fluxes[j] = old_fluxes[start]
+    
+                if old_errs !== nothing
+                    new_errs[j] = old_errs[start]
+                end
+            else
+                start_factor = (old_edges[start+1] - new_edges[j]) / (old_edges[start+1] - old_edges[start])
+                end_factor = (new_edges[j+1] - old_edges[stop]) / (old_edges[stop+1] - old_edges[stop])
+    
+                old_widths[start] *= start_factor
+                old_widths[stop] *= end_factor
+    
+                f_widths = old_widths[start:stop] .* old_fluxes[start:stop]
+
+                new_fluxes[j] = sum(f_widths) 
+                new_fluxes[j] /= sum(old_widths[start:stop])
+
+    
+                if old_errs !== nothing
+                    e_wid = old_widths[start:stop] .* old_errs[start:stop]
+                    new_errs[j] = sqrt(sum(e_wid.^2)) ./ sum(old_widths[start:stop])
+                end
+    
+                old_widths[start] /= start_factor
+                old_widths[stop] /= end_factor
+            end
+        end
+    
+        if old_errs !== nothing
+            return new_fluxes, new_errs
+        else
+            return new_fluxes
         end
     end
 
@@ -343,14 +425,14 @@ module ClassifierFunctions
     #------------------- Pre - Process Spectra -------------------
 
     function process_spectra(input_spectra_λ, input_spectra, input_spectra_σ, telluric_λ, remove_telluric)
-        if remove_telluric == "Y"
+        if remove_telluric == "Y" || remove_telluric == "y" || remove_telluric == "Yes" || remove_telluric == "yes" || remove_telluric == " Y" || remove_telluric == " y" || remove_telluric == " Yes" || remove_telluric == " yes"
             # Remove telluric featues from the spectra
             input_spectra_λ, input_spectra, input_spectra_σ, plotting_telluric_x, plotting_telluric_y = remove_tellurics(
                 telluric_λ, 
                 input_spectra_λ,
                 input_spectra, 
                 input_spectra_σ)
-        elseif remove_telluric == "N"
+        else
             plotting_telluric_x = []
             plotting_telluric_y = []
         end
@@ -389,14 +471,12 @@ module ClassifierFunctions
         full_template_λ = collect(bottom_λ:15:top_λ)
     
         # Trim and rebin the spectra to fit to the wavelength range of the templates
-        output_spectra, output_spectra_σ = spectres.spectres(
-            numpy.array(full_template_λ), 
-            numpy.array(de_redshifted_λ), 
-            numpy.array(input_spectra), 
-            numpy.array(input_spectra_σ), 
-            verbose = false
+        output_spectra, output_spectra_σ = spectral_resampler(
+            full_template_λ, 
+            de_redshifted_λ, 
+            input_spectra, 
+            input_spectra_σ
         )
-
 
         binned_spectra = deepcopy(output_spectra)
         binned_spectra_σ = deepcopy(output_spectra_σ)
@@ -422,8 +502,6 @@ module ClassifierFunctions
         non_standard_template_names = findall(x -> x == "N", transient_metadata["Standard WL"])
         common_names = intersect(transient_file_names, non_standard_template_names)
         non_standard_template_indices = findall(x -> x in common_names, transient_file_names)
-
-        
     
         output_transient_templates = [input_transient_templates[i][template_indicies] for i in standard_template_indices]
         output_host_templates = [input_host_templates[i][template_indicies] for i in eachindex(input_host_templates)]
@@ -548,8 +626,6 @@ module ClassifierFunctions
             deep_copy_spectra = deepcopy(spectra_to_fit)
             deep_copy_spectra_σ = deepcopy(spectra_to_fit_σ)
             deep_copy_λ = deepcopy(spectra_to_fit_λ)
-
-            reentrant_lock = ReentrantLock()
 
             for sn_i_idx in (1:num_sn)
                 λ_region = Array{Any}(undef)

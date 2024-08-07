@@ -20,3 +20,4 @@ transient_template_dir/
 custom_transients_dir/
 python_dir/.DS_Store
 .DS_Store
+**/.DS_Store
