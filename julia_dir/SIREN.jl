@@ -22,6 +22,8 @@ matplotlib = pyimport("matplotlib")
 plt = pyimport("matplotlib.pyplot")
 rcParams = matplotlib[:rcParams]
 
+
+
 #Set up threading for julia
 ENV["JULIA_NUM_THREADS"] = "auto"
 n_threads = Threads.nthreads()
@@ -39,7 +41,7 @@ end
 
 #----------------------------------------- READ IN TARGET AND TEMPLATE SPECTRA -----------------------------------------
 
-show_plots = true 
+show_plots = false
 delete_plot_folder_contents = false
 
 if delete_plot_folder_contents == true
@@ -52,8 +54,11 @@ println("Loading in Templates...")
 println("----------------------------------------------")
 
 #---------------------------------------Read in all the Transient Templates and metadata-----------------------------------------
-sn_metadata = CSV.read(joinpath("real_spectra_dir", "metadata","sn_data.csv"), DataFrame, delim=',')
-all_target_names = sn_metadata[!, "TRANSIENT_NAME"]
+sn_metadata_path = joinpath("SIREN_test_sets/SNLS/SNLS_metadata.csv")
+
+sn_metadata = CSV.read(sn_metadata_path, DataFrame, delim=',')
+
+all_target_names = sn_metadata[!, "Ascii file"]
 
 telluric_mask = readdlm(joinpath("real_spectra_dir", "metadata", "tellurics.txt"))
 
@@ -62,8 +67,11 @@ hg_template_wavs, pure_hg_spectra_files = read_template_files(pure_hg_spectra_fi
 
 
 #read in target spectra
-target_spectra_dict = read_target_spectra("real_spectra_dir")
+target_spectra_dict = read_target_spectra("SIREN_test_sets/SNLS/SNLS_ALL_SPECTRA", ',', 0)
 target_spectra_names = collect(keys(target_spectra_dict))
+
+#Initialise an empty dictionary to store the classifications
+classifications = OrderedDict()
 
 #-------------------------------------------------- RUN THE CLASSIFIER --------------------------------------------------
 println("----------------------------------------------")
@@ -71,29 +79,72 @@ println("Classifying ", length(target_spectra_names), " spectra with ", n_thread
 println("----------------------------------------------")
 
 
-for n in (target_spectra_names)
+if length(target_spectra_names) > 10
+    batch_mode = true
+else
+    batch_mode = false
+end
+
+
+for n in (batch_mode ? ProgressBar(target_spectra_names) : (target_spectra_names))
     target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
+
     target_name = splitext(n)[1]
-    #When Working on the OzDES data
     target_index = findfirst(x -> x == target_name, all_target_names)
-    target_redshift = sn_metadata[target_index, "REDSHIFT"]
-    target_remove_telluric = sn_metadata[target_index, "REMOVE_TELLURIC"]
+
+    if isnothing(target_index)
+        target_name = n
+        target_index = findfirst(x -> x == target_name, all_target_names)
+    end
+
+    #Find the closest matching name
+
+    if isnothing(target_index)
+        closest_match = find_closest_match(target_name, all_target_names)
+        print("Target ", target_name, " not found in $sn_metadata_path", " Closest match is ")
+        printstyled(closest_match, color = :red)
+        continue
+    end
 
 
-    println("Classifying ", target_name, "...")
+    target_redshift = sn_metadata[target_index, "Redshift"]
+
+    if ismissing(target_redshift)
+        println("Target ", target_name, " has no redshift information")
+        continue
+
+    elseif target_redshift > 1.0 
+        println("Target ", target_name, " has a redshift of ", target_redshift, " which is too high for SIREN")
+        continue
+    end 
+    
+    target_remove_telluric = "N"
+
+    if batch_mode == false
+        println("Classifying ", target_name, "...")
+    end
+    
+
     best_params, chi_red, path, z, type = chi_squared_classifier(
         pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files,
-         sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], telluric_mask, show_plots, target_remove_telluric)
+        sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], telluric_mask, batch_mode, show_plots, target_remove_telluric)
 
-    println("SN Name           : ", target_name)
-    println("Redshift          : ", round(z, digits = 2))
-    println("Path              : ", path)
-    println("Type              : ", type)
-    #println("SN fit params     : ", round(best_params[:, 1], digits = 4))
-    #4println("HG fit params     : ", round(best_params[:, 2], digits = 4))
-    #println("χ^2 Reduced       : ", round(chi_red[], digits = 4))
-    println("----------------------------------------------")
+    if batch_mode == false
+        println("SN Name           : ", target_name)
+        println("Redshift          : ", round(z, digits = 2))
+        println("Path              : ", path)
+        println("Type              : ", type)
+        println("----------------------------------------------")
+    end
 
+    classifications[target_name] = (z, type, minimum(chi_red))
+end
+
+
+
+#Save the classifications as a JSON file
+JSON.open(joinpath("classifications_dir", "SNLS_classifications.json"), "w") do file
+    JSON.print(file, classifications)
 end
 
 println("Classifications Finished")

@@ -112,37 +112,108 @@ module ClassifierFunctions
         TBW
     """
     function read_file(key, spectra_dict)
-            return readdlm(joinpath(spectra_dict["path"][key], string(key)))
+        return readdlm(joinpath(spectra_dict["path"][key], string(key)))
+    end
+
+    function string_import(file_path::String, delimiter::Char, skip_header::Int)
+        file_data = readdlm(file_path, delimiter, skipstart = skip_header)
+    
+        content = zeros(Float64, length(file_data), 3)
+    
+        failed = false
+        for i in eachindex(file_data)
+            row = file_data[i]
+            vals = split(row)
+
+            try
+                content[i, 1] = parse(Float64, vals[1])
+                content[i, 2] = parse(Float64, vals[2])
+            catch
+                failed = true
+                break
+            end
+    
+            if length(vals) == 2
+                content[i, 3] = NaN
+            else
+                if vals[3] == "---" || vals[3] == "NaN" || vals[3] == ""
+                    content[i, 3] = NaN
+                else
+                    content[i, 3] = parse(Float64, vals[3])
+                end
+            end
         end
 
+        if failed == true
+            imported = false
+        else 
+            imported = true
+        end
+    
+        return content, imported
+    end
+    
+
     #------------------- Read in target spectra -------------------
-    function read_target_spectra(directory::String)
+    function read_target_spectra(directory::String, delimiter::Char = ',', skip_header::Int = 0)
         files_dict = Dict{String, Tuple{Vector{Float16}, Vector{Float16}, Vector{Float16}}}()
-        for filename in readdir(directory)
-            if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".asci") || endswith(filename, ".csv")
+        println("Loading in Target Spectra...")
+        skip = skip_header
+        for filename in ProgressBar(readdir(directory))
+            if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".asci") || endswith(filename, ".csv") || endswith(filename, ".list")
+                
                 file_path = joinpath(directory, filename)
 
-                if endswith(filename, ".csv")
-                    content = CSV.read(file_path, DataFrame, delim = ",")
-                else 
-                    content = readdlm(file_path)
+                imported = false
+                
+                while !imported
+                    if endswith(filename, ".csv")
+                        content = CSV.read(file_path, DataFrame)
+                    else 
+                        content = readdlm(file_path, delimiter, skipstart = skip)
+                        try
+                            spectra = content[:, 2] 
+                        catch
+                            content, imported = string_import(file_path, delimiter, skip) #Check if the rows are being imported as one big string instead of columns
+                        end
+                    end
+                
+                    if typeof(content[1,1]) == String || content[1, 1] == 0 || typeof(content[1,1]) == SubString{String}
+                        imported = false
+                        skip += 1
+                    else
+                        imported = true
+                    end
+                    global content
                 end
-                λ= content[:, 1]
-                spectra = content[:, 2] 
+
+                λ = content[:, 1]
+                spectra = content[:, 2]
+
                 spec_min = minimum(spectra)
                 if spec_min < 0
-                    spectra = spectra .+ abs(spec_min)
+                    spectra = spectra .+ (2*abs(spec_min))
                 end
-                spectra = spectra ./ maximum(spectra) .* 100
+
+                no_errs = false
 
                 try
                     spectra_σ = content[:, 3]
+                    if isempty(spectra_σ) || any(isnan.(spectra_σ))
+                        no_errs = true
+                    end
                 catch
-                    spectra_σ = sqrt.(spectra)
+                    no_errs = true
                 end
-                #if no error provided, spectra_σ is set to root of the spectra
-                spectra_σ = sqrt.(spectra_σ)
 
+                scaler = maximum(spectra) / 100
+                spectra = (spectra ./ scaler)
+                
+                if !no_errs
+                    spectra_σ = (spectra_σ ./ scaler)
+                else
+                    spectra_σ = sqrt.(spectra) 
+                end
 
                 files_dict[filename] = (λ, spectra, spectra_σ)
 
@@ -157,7 +228,7 @@ module ClassifierFunctions
                 try
                     spectra_σ = read(f[2])
                 catch
-                    spectra_σ = sqrt.(spectra)
+                    spectra_σ = spectra .* 0.1
                 end
 
                 spectra_σ = sqrt.(spectra_σ)
@@ -246,7 +317,7 @@ module ClassifierFunctions
         return edges, widths
     end
     
-    function spectral_resampler(new_λ, old_λ, old_fluxes, old_errs = nothing, fill = nothing, verbose = true)
+    function spectral_resampler(new_λ, old_λ, old_fluxes, old_errs = nothing, fill = NaN, verbose = true)
         old_edges, old_widths = make_bins(old_λ)
         new_edges, new_widths = make_bins(new_λ)
     
@@ -266,15 +337,16 @@ module ClassifierFunctions
     
         for j in 1:size(new_λ, 1)
             if (new_edges[j] < old_edges[1]) || (new_edges[j+1] > old_edges[end])
-                new_fluxes[:, :, j] .= fill
+                
+                new_fluxes[j] = fill
     
                 if old_errs !== nothing
-                    new_errs[:, :, j] .= fill
+                    new_errs[j] = fill
                 end
     
                 if (j == 1 || j == size(new_λ, 1)) && verbose && !warned
                     warned = true
-                    println("New_λ contains values outside the range in spec_λ, new_fluxes and new_errs will be filled with the value set in the 'fill' keyword argument. \n")
+                    #println("New_λ contains values outside the range in spec_λ, new_fluxes and new_errs will be filled with the value set in the 'fill' keyword argument. \n")
                 end
                 continue
             end
@@ -547,32 +619,36 @@ module ClassifierFunctions
 
     TBW
     """
-    function fit_spectrum(input_spectra, input_spectra_σ, input_spectra_λ, sn_templates, sn_file_names, sn_info, hg_templates, hg_file_names, hg_info, sn_wavelength, hg_wavelength, target_redshift, telluric_λ, remove_telluric)
+    function fit_spectrum(input_spectra, input_spectra_σ, input_spectra_λ, sn_templates, sn_file_names, 
+        sn_info, hg_templates, hg_file_names, hg_info, sn_wavelength, hg_wavelength, target_redshift, telluric_λ, remove_telluric, batch_mode)
         #Generate empty matricies to store the different parameters returned from the fit
         num_sn = length(sn_templates)
         num_hg = length(hg_templates)
 
-        #Generate an empy array of length 5 to store the top 5 χ2 values
-        chi_squared_arr = [10.0^10, 11.0^10, 12.0^10, 13.0^10, 14.0^10]
-        chi_squared_red_arr = [10.0^10, 11.0^10, 12.0^10, 13.0^10, 14.0^10]
+        number_of_fits = length(unique(values(sn_info["Type"])))
+        unique_types = unique(values(sn_info["Type"]))
+
+        #Generate an empy array of length number_of_fits to store the top number_of_fits χ2 values
+        chi_squared_arr = collect(1:1:number_of_fits).*10.0^10
+        chi_squared_red_arr = collect(1:1:number_of_fits).*10.0^10
 
         #Empty arrays to store the fitting info
-        norm_arr = zeros(Float16, 5, 2)
-        redshift_vals = zeros(Float16, 5)
-        indexes = zeros(Int, 5, 2)
-        emission_lines = Vector{Array}(undef, 5)
-        emission_lines_λ= Vector{Array}(undef, 5)
+        norm_arr = zeros(Float16, number_of_fits, 2)
+        redshift_vals = zeros(Float16, number_of_fits)
+        indexes = zeros(Int, number_of_fits, 2)
+        emission_lines = Vector{Array}(undef, number_of_fits)
+        emission_lines_λ= Vector{Array}(undef, number_of_fits)
 
         #The empty arrays to store the binned spectra
-        binned_spectra_arr = Vector{Array}(undef, 5)
-        binned_λ_arr = Vector{Array}(undef, 5)
-        binned_spectra_σ_arr = Vector{Array}(undef, 5)
-        best_fit_arr = Vector{Array}(undef, 5)
-        sn_component_arr = Vector{Array}(undef, 5)
-        hg_component_arr = Vector{Array}(undef, 5)
-        spectra_fit_region = Vector{Array}(undef, 5)
-        spectra_σ_fit_region = Vector{Array}(undef, 5)
-        spectra_λ_fit_region = Vector{Array}(undef, 5)
+        binned_spectra_arr = Vector{Array}(undef, number_of_fits)
+        binned_λ_arr = Vector{Array}(undef, number_of_fits)
+        binned_spectra_σ_arr = Vector{Array}(undef, number_of_fits)
+        best_fit_arr = Vector{Array}(undef, number_of_fits)
+        sn_component_arr = Vector{Array}(undef, number_of_fits)
+        hg_component_arr = Vector{Array}(undef, number_of_fits)
+        spectra_fit_region = Vector{Array}(undef, number_of_fits)
+        spectra_σ_fit_region = Vector{Array}(undef, number_of_fits)
+        spectra_λ_fit_region = Vector{Array}(undef, number_of_fits)
 
         spectra_to_fit = deepcopy(input_spectra)
         spectra_to_fit_σ = deepcopy(input_spectra_σ)
@@ -589,10 +665,15 @@ module ClassifierFunctions
             remove_telluric
         )
 
+        redshift_max = 0.6
 
+        if target_redshift > redshift_max
+            redshift_max = round(target_redshift, digits = 2)
+        end
         #Loop through the redshift range of z=0.0 to z=0.6
-        redshift_range = collect(0.00:0.01:0.6)
-        for z in ProgressBar(redshift_range)
+        redshift_range = collect(0.00:0.01:redshift_max)
+        
+        for z in (batch_mode ? redshift_range : ProgressBar(redshift_range))
 
             spectra_to_fit = deepcopy(processed_spectra)
             spectra_to_fit_σ = deepcopy(processed_spectra_σ)
@@ -656,7 +737,6 @@ module ClassifierFunctions
                 else
                     sn_i = pure_sn_spectra[sn_i_idx] 
                     sn_i_λ= sn_λ[sn_i_idx]
-                    
                 end
 
                 for hg_i_idx in 1:num_hg
@@ -666,7 +746,6 @@ module ClassifierFunctions
                         hg_i_λ= hg_λ[hg_i_idx]
 
                         common_wavelengths = intersect(sn_i_λ, hg_i_λ)
-                        λ_region = hg_i_λ
 
                         hg_i = hg_i[findall(x -> x in common_wavelengths, hg_i_λ)]
                         hg_i_λ= hg_i_λ[findall(x -> x in common_wavelengths, hg_i_λ)]
@@ -688,30 +767,33 @@ module ClassifierFunctions
                     #chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) * length(spectra_to_fit))
                     chi_squared_red = chi_squared / ((length(spectra_to_fit) - DoF) )
 
+                    #Find the corresponding index in the chi_squared_arr from the type
+                    type = sn_info["Type"][sn_file_names[sn_i_idx]]
+                    index = findall(x -> x == type, unique_types)[1]
 
-                    if chi_squared_red < maximum(chi_squared_red_arr)
-                        max_index = argmax(chi_squared_red_arr)
-                        chi_squared_arr[max_index] = chi_squared
-                        chi_squared_red_arr[max_index] = chi_squared_red
-                        norm_arr[max_index, 1] = norm_sn
-                        norm_arr[max_index, 2] = norm_hg
-                        indexes[max_index, 1] = sn_i_idx
-                        indexes[max_index, 2] = hg_i_idx
-                        redshift_vals[max_index] = z
+                    if chi_squared_red < chi_squared_red_arr[index]
 
-                        emission_lines[max_index] = emission_line
-                        emission_lines_λ[max_index] = emission_line_λ
+                        chi_squared_arr[index] = chi_squared
+                        chi_squared_red_arr[index] = chi_squared_red
+                        norm_arr[index, 1] = norm_sn
+                        norm_arr[index, 2] = norm_hg
+                        indexes[index, 1] = sn_i_idx
+                        indexes[index, 2] = hg_i_idx
+                        redshift_vals[index] = z
 
-                        binned_spectra_arr[max_index] = binned_spectra
-                        binned_λ_arr[max_index] = binned_spectra_λ
-                        binned_spectra_σ_arr[max_index] = binned_spectra_σ
+                        emission_lines[index] = emission_line
+                        emission_lines_λ[index] = emission_line_λ
 
-                        best_fit_arr[max_index] = convolved_pure_spectra
-                        sn_component_arr[max_index] = sn_i * norm_sn
-                        hg_component_arr[max_index] = hg_i * norm_hg
-                        spectra_fit_region[max_index] = spectra_to_fit
-                        spectra_σ_fit_region[max_index] = spectra_to_fit_σ
-                        spectra_λ_fit_region[max_index] = λ_region
+                        binned_spectra_arr[index] = binned_spectra
+                        binned_λ_arr[index] = binned_spectra_λ
+                        binned_spectra_σ_arr[index] = binned_spectra_σ
+
+                        best_fit_arr[index] = convolved_pure_spectra
+                        sn_component_arr[index] = sn_i * norm_sn
+                        hg_component_arr[index] = hg_i * norm_hg
+                        spectra_fit_region[index] = spectra_to_fit
+                        spectra_σ_fit_region[index] = spectra_to_fit_σ
+                        spectra_λ_fit_region[index] = λ_region
                     end
                 end
             end
@@ -720,19 +802,14 @@ module ClassifierFunctions
     end
 
     #------------------- Chi Squared Classifier -------------------
-        """
-        chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_hg_spectra_info, pure_hg_spectra_file_names, altered_spectra, altered_spectra_info, altered_spectra_file_names, random_index, SN_ID, show_plot = false)
-
-    TBW
-    """
-    function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, sn_template_λ, hg_template_λ, altered_spectra, target_λ, altered_spectra_σ, SN_ID, target_redshift, telluric_λ, show_plot = false, remove_telluric = "N")
+    function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, sn_template_λ, hg_template_λ, altered_spectra, target_λ, altered_spectra_σ, SN_ID, target_redshift, telluric_λ, batch_mode, show_plot = false, remove_telluric = "N")
 
         #Save the original target spectra
         original_altered_spectra = deepcopy(altered_spectra)
         original_altered_spectra_σ = deepcopy(altered_spectra_σ)
         original_wavelenth = deepcopy(target_λ)
 
-        top_5_chi, top_5_chi_red, top_5_norm_params, top_5_indices, top_5_sn_redshift, top_5_best_fits, top_5_sn_component, top_5_hg_component, top_5_spectra_fit_region, top_5_spectra_σ_fit_region, top_5_λ_fit_region, emission_line_λ_arr, binned_plotting_spectra_arr, binned_plotting_λ_arr, binned_plotting_spectra_σ_arr, masked_tellurics = fit_spectrum(
+        top_fits_chi, top_fits_chi_red, top_fits_norm_params, top_fits_indices, top_fits_sn_redshift, top_fits_best_fits, top_fits_sn_component, top_fits_hg_component, top_fits_spectra_fit_region, top_fits_spectra_σ_fit_region, top_fits_λ_fit_region, emission_line_λ_arr, binned_plotting_spectra_arr, binned_plotting_λ_arr, binned_plotting_spectra_σ_arr, masked_tellurics = fit_spectrum(
             altered_spectra, 
             altered_spectra_σ, 
             target_λ, 
@@ -745,14 +822,15 @@ module ClassifierFunctions
             sn_template_λ, 
             hg_template_λ, 
             target_redshift,
-            telluric_λ, remove_telluric)
+            telluric_λ, remove_telluric, batch_mode)
 
-        #Extract the best fit parameters
-        top_5_sn_type = [pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[i]] for i in top_5_indices[:, 1]]
-        top_5_hg_type = [pure_hg_spectra_info["HG Type"][pure_hg_spectra_file_names[i]] for i in top_5_indices[:, 2]]
-        top_5_sn_a_v = [pure_sn_spectra_info["SN A_v"][pure_sn_spectra_file_names[i]] for i in top_5_indices[:, 1]]
-        top_5_Eb_v = [i / 3.1 for i in top_5_sn_a_v]
-        top_5_phase = [pure_sn_spectra_info["tau"][pure_sn_spectra_file_names[i]] for i in top_5_indices[:, 1]]
+        fits = findall(x -> x != 0, top_fits_indices[:, 1])
+
+        top_fits_sn_type = [pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[i]] for i in top_fits_indices[fits, 1]]
+        top_fits_hg_type = [pure_hg_spectra_info["HG Type"][pure_hg_spectra_file_names[i]] for i in top_fits_indices[fits, 2]]
+        top_fits_sn_a_v = [pure_sn_spectra_info["SN A_v"][pure_sn_spectra_file_names[i]] for i in top_fits_indices[fits, 1]]
+        top_fits_Eb_v = [i / 3.1 for i in top_fits_sn_a_v[fits]]
+        top_fits_phase = [pure_sn_spectra_info["tau"][pure_sn_spectra_file_names[i]] for i in top_fits_indices[fits, 1]]
         
         plotpath = "No Plot Saved"
 
@@ -761,15 +839,16 @@ module ClassifierFunctions
             rcParams = matplotlib["rcParams"]
             rcParams["axes.linewidth"] = 3
 
+            number_of_plots = length(fits)
             #Create multiple new plots of the top 5 fits ----------------------------------------------------------------
-            for i in 1:5
+            for i in 1:number_of_plots
 
                 #Defines whether to set the phase as τ or t0
-                if top_5_phase[i] == "N/A"
-                    top_5_phase[i] = pure_sn_spectra_info["t0"][pure_sn_spectra_file_names[top_5_indices[i, 1]]]
-                    phase_display = L", $t_0$ = " * string(top_5_phase[i]) * " days"
+                if top_fits_phase[i] == "N/A"
+                    top_fits_phase[i] = pure_sn_spectra_info["t0"][pure_sn_spectra_file_names[top_fits_indices[i, 1]]]
+                    phase_display = L", $t_0$ = " * string(top_fits_phase[i]) * " days"
                 else
-                    phase_display = L", $\tau$ = " * string(top_5_phase[i]) * " days"
+                    phase_display = L", $\tau$ = " * string(top_fits_phase[i]) * " days"
                 end
 
                 #Extract the plotting data
@@ -792,8 +871,8 @@ module ClassifierFunctions
                 plotting_telluric = [binned_plotting_spectra[i-1:i+1] for i in 1:length(binned_plotting_spectra)-1 if binned_plotting_λ[i] in telluric_λ]
                 plotting_telluric_λ= [binned_plotting_λ[i-1:i+1] for i in 1:length(binned_plotting_spectra)-1 if binned_plotting_λ[i] in telluric_λ]
 
-                plotting_original_wavelength = original_wavelenth ./ (1 + top_5_sn_redshift[i])
-                plotting_telluric_λ= plotting_telluric_λ./ (1 + top_5_sn_redshift[i])
+                plotting_original_wavelength = original_wavelenth ./ (1 + top_fits_sn_redshift[i])
+                plotting_telluric_λ= plotting_telluric_λ./ (1 + top_fits_sn_redshift[i])
 
                 #----------------------------------------------------------------------------------------------------------------
 
@@ -804,7 +883,7 @@ module ClassifierFunctions
                 axs.tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom = true, top = true, left = true, right = true)
                 axs.minorticks_on()
 
-                fig.suptitle(string(SN_ID) * L": \chi^2_\nu / Å = " * string(round(top_5_chi_red[i], digits=2))  * ", SN = Type " * string(top_5_sn_type[i])  * ", Host = " * string(top_5_hg_type[i])  * ", Z = " *string(round(top_5_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_5_norm_params[i, 2]/(top_5_norm_params[i, 1] + top_5_norm_params[i, 2]) * 100, digits = 3)) * "%" * phase_display * ", E(B-V) = " * string(round(top_5_Eb_v[i], digits = 2)), fontsize = 18)
+                fig.suptitle(string(SN_ID) * L": \chi^2_\nu / Å = " * string(round(top_fits_chi_red[i], digits=2))  * ", SN = Type " * string(top_fits_sn_type[i])  * ", Host = " * string(top_fits_hg_type[i])  * ", Z = " *string(round(top_fits_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_fits_norm_params[i, 2]/(top_fits_norm_params[i, 1] + top_fits_norm_params[i, 2]) * 100, digits = 3)) * "%" * phase_display * ", E(B-V) = " * string(round(top_fits_Eb_v[i], digits = 2)), fontsize = 18)
 
 
                 #axs.set_title("Source, SNe and Best Fit Spectrum")
@@ -813,7 +892,7 @@ module ClassifierFunctions
                 axs.fill_between(binned_plotting_λ, binned_plotting_spectra .- binned_plotting_spectra_σ, binned_plotting_spectra .+ binned_plotting_spectra_σ, color="black", alpha=0.5)
                 axs.plot(plotting_original_wavelength, original_altered_spectra, label="Original Spectrum", color="black", alpha = 0.2)
                 axs.plot(binned_plotting_λ, binned_plotting_spectra, label="Binned Spectrum", color="black", alpha = 0.7)
-                axs.plot(top_5_λ_fit_region[i], top_5_best_fits[i] , label="Best fit", color="red")
+                axs.plot(top_fits_λ_fit_region[i], top_fits_best_fits[i] , label="Best fit", color="red")
 
 
                 #for i in eachindex(plotting_emission_line)
@@ -831,16 +910,16 @@ module ClassifierFunctions
                 max_σ_array = (binned_plotting_spectra_σ[.!plotting_nans])
                 axis_min = minimum(max_array .- max_σ_array) * 1.1
                 axis_max = maximum(max_array .+ max_σ_array) * 1.1
-                axs.set_ylim(axis_min, axis_max)
+                #axs.set_ylim(axis_min, axis_max)
 
                 offset = 30
 
-                supernova_residual = top_5_spectra_fit_region[i] .- top_5_hg_component[i]
+                supernova_residual = top_fits_spectra_fit_region[i] .- top_fits_hg_component[i]
                 supernova_residual = supernova_residual .- offset
-                sn_component = top_5_sn_component[i] .- offset
+                sn_component = top_fits_sn_component[i] .- offset
 
-                axs.plot(top_5_λ_fit_region[i], supernova_residual, label="Supernova (Spectrum - Host)", color="black")
-                axs.plot(top_5_λ_fit_region[i], sn_component, label="Pure SN", color="#1289A7")
+                axs.plot(top_fits_λ_fit_region[i], supernova_residual, label="Supernova (Spectrum - Host)", color="black")
+                axs.plot(top_fits_λ_fit_region[i], sn_component, label="Pure SN", color="#1289A7")
                 axs.set_xlim(minimum(plotting_original_wavelength) -100, maximum(plotting_original_wavelength) + 100)
                 #axs.set_ylim(minimum(supernova_residual), 1.1 * maximum(binned_plotting_spectra))
                 axs.legend(loc="center", bbox_to_anchor=(0.5, -.15), ncol = 4)
@@ -848,7 +927,7 @@ module ClassifierFunctions
                 #Add a second axis to display the rest wavelength
                 x_axis = collect(minimum(plotting_original_wavelength)-100:1:maximum(plotting_original_wavelength)+100)
 
-                rest_wavelength = x_axis .* (1 + top_5_sn_redshift[i])
+                rest_wavelength = x_axis .* (1 + top_fits_sn_redshift[i])
 
                 axs2 = axs.twiny()
                 axs2.tick_params(axis="both", which="major", width=1, length=6, direction="in",  top = true)
@@ -884,11 +963,21 @@ module ClassifierFunctions
             end
         end
 
-        best_chi = argmin(top_5_chi_red)
-        best_redshift = top_5_sn_redshift[best_chi]
-        best_type = top_5_sn_type[best_chi]
+        best_chi = argmin(top_fits_chi_red)
+        best_redshift = top_fits_sn_redshift[best_chi]
 
-        return  top_5_norm_params, top_5_chi_red, plotpath, best_redshift, best_type
+        if isempty(top_fits_sn_type)
+            best_type = "Unknown"
+            println("--------------------")
+            printstyled("ERROR: ", color=:red)
+            println("Fitting $SN_ID - No fitting results found.")
+            println("--------------------")
+        else
+            best_type = top_fits_sn_type[best_chi]
+        end
+        
+
+        return  top_fits_norm_params, top_fits_chi_red, plotpath, best_redshift, best_type
     end
 
     export delete_folder_contents, adapative_binning, chi_squared_classifier, fit_sn_hg, fitting_func, fit_spectrum, read_file, read_target_spectra, read_template_files, trim_nans, calculate_B, calculate_C

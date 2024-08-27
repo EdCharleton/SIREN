@@ -334,9 +334,9 @@ except:
 
 if generate_supernova == True:
     #list of SNCosmo models
-    model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr", "nugent-sn91t", "nugent-sn91bg", "nugent-sn1a", "hsiao"])
-    sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "91t-like", "91bg-like", "Ia", "Ia"])
-    galactic_source = np.array(['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N'])
+    model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr", "nugent-sn91t", "nugent-sn91bg", "nugent-sn1a", "hsiao", "s11-2006jl", "v19-2006t", "v19-2012ap-corr"])
+    sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "91t-like", "91bg-like", "Ia", "Ia", "IIP", "IIb", "Ic-BL"])
+    galactic_source = np.array(['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', "N", "N", "N"])
 
     salt3_tau = generate_phases(-18, 50, 1) #Ia
     v19_2009kr_corr_tau = generate_phases(-10, 50, 1) #II
@@ -346,6 +346,9 @@ if generate_supernova == True:
     nugent_sn91bg_tau = generate_phases(1, 70, 1) #91bg-like
     nugent_sn1a_tau = generate_phases(1, 70, 1) #Ia
     hsiao_tau = generate_phases(-18, 50, 1) #Ia
+    s11_2006jl_tau = generate_phases(-10, 50, 1) #IIP
+    v19_2006t_tau = generate_phases(-10, 50, 1) #IIb
+    v19_2012ap_corr_tau = generate_phases(-10, 50, 1) #Ic-BL
 
     phases_dict = {
         'salt3': salt3_tau,
@@ -355,7 +358,10 @@ if generate_supernova == True:
         'nugent-sn91t': nugent_sn91t_tau,
         'nugent-sn91bg': nugent_sn91bg_tau,
         'nugent-sn1a': nugent_sn1a_tau,
-        'hsiao': hsiao_tau     
+        'hsiao': hsiao_tau,
+        's11-2006jl': s11_2006jl_tau,
+        'v19-2006t': v19_2006t_tau,
+        'v19-2012ap-corr': v19_2012ap_corr_tau
 }
     
     # Generate directories for the spectra
