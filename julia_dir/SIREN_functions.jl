@@ -1,8 +1,6 @@
 #------------------------------------------------------------
 #Import Packages
 #------------------------------------------------------------
-
-
 #Define the code as a module
 module ClassifierFunctions
 
@@ -14,6 +12,7 @@ module ClassifierFunctions
     using JSON
     using ProgressBars
     using Pkg
+    using PyPlot
     using DustExtinction    
     using BenchmarkTools
     using DataStructures
@@ -36,6 +35,7 @@ module ClassifierFunctions
     matplotlib = pyimport("matplotlib")
     plt = pyimport("matplotlib.pyplot")
     numpy = pyimport("numpy")
+    @pyimport matplotlib.font_manager as fm
 
     rcParams = matplotlib[:rcParams]
     
@@ -158,10 +158,11 @@ module ClassifierFunctions
     function read_target_spectra(directory::String, delimiter::Char = ',', skip_header::Int = 0)
         files_dict = Dict{String, Tuple{Vector{Float16}, Vector{Float16}, Vector{Float16}}}()
         println("Loading in Target Spectra...")
-        skip = skip_header
+
         for filename in ProgressBar(readdir(directory))
-            if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".asci") || endswith(filename, ".csv") || endswith(filename, ".list")
-                
+            skip = skip_header
+            if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".ascii") || endswith(filename, ".csv") || endswith(filename, ".list") || endswith(filename, ".flm") || endswith(filename, ".asci")
+                #println(filename, " ", skip)
                 file_path = joinpath(directory, filename)
 
                 imported = false
@@ -649,6 +650,7 @@ module ClassifierFunctions
         spectra_fit_region = Vector{Array}(undef, number_of_fits)
         spectra_σ_fit_region = Vector{Array}(undef, number_of_fits)
         spectra_λ_fit_region = Vector{Array}(undef, number_of_fits)
+        contam_array = Vector{Float16}(undef, number_of_fits)
 
         spectra_to_fit = deepcopy(input_spectra)
         spectra_to_fit_σ = deepcopy(input_spectra_σ)
@@ -671,6 +673,7 @@ module ClassifierFunctions
             redshift_max = round(target_redshift, digits = 2)
         end
         #Loop through the redshift range of z=0.0 to z=0.6
+        redshift_max = 0.6
         redshift_range = collect(0.00:0.01:redshift_max)
         
         for z in (batch_mode ? redshift_range : ProgressBar(redshift_range))
@@ -781,6 +784,9 @@ module ClassifierFunctions
                         indexes[index, 2] = hg_i_idx
                         redshift_vals[index] = z
 
+                        contamination = ((sum(hg_i .* norm_hg)) / ((sum((sn_i .* norm_sn) .+ (hg_i .* norm_hg))))) * 100
+                        contam_array[index] = contamination
+
                         emission_lines[index] = emission_line
                         emission_lines_λ[index] = emission_line_λ
 
@@ -798,7 +804,7 @@ module ClassifierFunctions
                 end
             end
         end
-        return chi_squared_arr, chi_squared_red_arr, norm_arr, indexes, redshift_vals, best_fit_arr, sn_component_arr, hg_component_arr, spectra_fit_region, spectra_σ_fit_region, spectra_λ_fit_region, emission_lines_λ, binned_spectra_arr, binned_λ_arr, binned_spectra_σ_arr, telluric_λ
+        return chi_squared_arr, chi_squared_red_arr, norm_arr, indexes, redshift_vals, best_fit_arr, sn_component_arr, hg_component_arr, spectra_fit_region, spectra_σ_fit_region, spectra_λ_fit_region, emission_lines_λ, binned_spectra_arr, binned_λ_arr, binned_spectra_σ_arr, telluric_λ, contam_array
     end
 
     #------------------- Chi Squared Classifier -------------------
@@ -809,7 +815,7 @@ module ClassifierFunctions
         original_altered_spectra_σ = deepcopy(altered_spectra_σ)
         original_wavelenth = deepcopy(target_λ)
 
-        top_fits_chi, top_fits_chi_red, top_fits_norm_params, top_fits_indices, top_fits_sn_redshift, top_fits_best_fits, top_fits_sn_component, top_fits_hg_component, top_fits_spectra_fit_region, top_fits_spectra_σ_fit_region, top_fits_λ_fit_region, emission_line_λ_arr, binned_plotting_spectra_arr, binned_plotting_λ_arr, binned_plotting_spectra_σ_arr, masked_tellurics = fit_spectrum(
+        top_fits_chi, top_fits_chi_red, top_fits_norm_params, top_fits_indices, top_fits_sn_redshift, top_fits_best_fits, top_fits_sn_component, top_fits_hg_component, top_fits_spectra_fit_region, top_fits_spectra_σ_fit_region, top_fits_λ_fit_region, emission_line_λ_arr, binned_plotting_spectra_arr, binned_plotting_λ_arr, binned_plotting_spectra_σ_arr, masked_tellurics, contam_frac = fit_spectrum(
             altered_spectra, 
             altered_spectra_σ, 
             target_λ, 
@@ -838,6 +844,13 @@ module ClassifierFunctions
             # Adjust rcparams
             rcParams = matplotlib["rcParams"]
             rcParams["axes.linewidth"] = 3
+
+            plt.rcParams["font.size"] = 24        # Set global font size
+            plt.rcParams["axes.labelsize"] = 22    # Set font size for axis labels
+            plt.rcParams["xtick.labelsize"] = 22   # Set font size for x-axis ticks
+            plt.rcParams["ytick.labelsize"] = 22   # Set font size for y-axis ticks
+            plt.rcParams["legend.fontsize"] = 22   # Set font size for legend
+
 
             number_of_plots = length(fits)
             #Create multiple new plots of the top 5 fits ----------------------------------------------------------------
@@ -875,91 +888,119 @@ module ClassifierFunctions
                 plotting_telluric_λ= plotting_telluric_λ./ (1 + top_fits_sn_redshift[i])
 
                 #----------------------------------------------------------------------------------------------------------------
+                # Set A4 size in inches
+                a4_width, a4_height = 8.27, 11.69
 
-                fig, axs = plt.subplots(nrows=1, ncols=1, figsize=(12, 8), dpi=300)
-                plt.subplots_adjust(top = 0.85, bottom = 0.15)
+                fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(a4_width, a4_height), dpi=400)  # A4 size
+                plt.subplots_adjust(hspace=0, top=0.85, bottom=0.15)
 
-                axs.tick_params(axis="both", which="major", width=1, length=6, direction="in", bottom = true, top = true, left = true, right = true)
-                axs.tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom = true, top = true, left = true, right = true)
-                axs.minorticks_on()
+                # Adjust the first subplot (original spectrum)
+                axs[1].tick_params(axis="both", which="major", width=1, length=6, direction="in", bottom=true, top=true, left=true, right=true)
+                axs[1].tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom=true, top=true, left=true, right=true)
+                axs[1].minorticks_on()
 
-                fig.suptitle(string(SN_ID) * L": \chi^2_\nu / Å = " * string(round(top_fits_chi_red[i], digits=2))  * ", SN = Type " * string(top_fits_sn_type[i])  * ", Host = " * string(top_fits_hg_type[i])  * ", Z = " *string(round(top_fits_sn_redshift[i], digits = 2)) * "\n" * "HG Contam = " * string(round(top_fits_norm_params[i, 2]/(top_fits_norm_params[i, 1] + top_fits_norm_params[i, 2]) * 100, digits = 3)) * "%" * phase_display * ", E(B-V) = " * string(round(top_fits_Eb_v[i], digits = 2)), fontsize = 18)
+                host_frac = round(contam_frac[i], digits=0)
+                host_frac = Int(host_frac)
+                fig.suptitle(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_fits_chi_red[i], digits=2)) * ", SN = Type " * string(top_fits_sn_type[i]) * ", Host = " * string(top_fits_hg_type[i]) * ", z = " * string(round(top_fits_sn_redshift[i], digits=2)) * "\n" * "HG Contam = " * string(host_frac) * "%" * phase_display, fontsize=18)
 
+                # First subplot (original spectrum)
+                axs[1].fill_between(plotting_original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12)
+                axs[1].fill_between(binned_plotting_λ, binned_plotting_spectra .- binned_plotting_spectra_σ, binned_plotting_spectra .+ binned_plotting_spectra_σ, color="black", alpha=0.5)
+                axs[1].plot(plotting_original_wavelength, original_altered_spectra, label="Original Spectrum", color="black", alpha=0.2)
+                axs[1].plot(binned_plotting_λ, binned_plotting_spectra, label="Binned Spectrum", color="black", alpha=0.7)
+                axs[1].plot(top_fits_λ_fit_region[i], top_fits_best_fits[i], label="Best fit", color="red")
 
-                #axs.set_title("Source, SNe and Best Fit Spectrum")
-                axs.fill_between(plotting_original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12)
+                axs[1].set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
+                axs[1].set_ylabel("Flux [AU]")
 
-                axs.fill_between(binned_plotting_λ, binned_plotting_spectra .- binned_plotting_spectra_σ, binned_plotting_spectra .+ binned_plotting_spectra_σ, color="black", alpha=0.5)
-                axs.plot(plotting_original_wavelength, original_altered_spectra, label="Original Spectrum", color="black", alpha = 0.2)
-                axs.plot(binned_plotting_λ, binned_plotting_spectra, label="Binned Spectrum", color="black", alpha = 0.7)
-                axs.plot(top_fits_λ_fit_region[i], top_fits_best_fits[i] , label="Best fit", color="red")
+                axs[1].set_yticklabels([])
 
-
-                #for i in eachindex(plotting_emission_line)
-                #    axs.plot(plotting_emission_line_λ[i], plotting_emission_line[i], color="orange", linestyle = ":")
-                #end
-
-                #for i in eachindex(plotting_telluric)
-                #    axs.plot(plotting_telluric_λ[i], plotting_telluric[i], color="orange")
-                #end
-
-                axs.set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
-                axs.set_ylabel("Flux [AU]")
                 plotting_nans = isnan.(binned_plotting_spectra)
                 max_array = (binned_plotting_spectra[.!plotting_nans])
                 max_σ_array = (binned_plotting_spectra_σ[.!plotting_nans])
-                axis_min = minimum(max_array .- max_σ_array) * 1.1
-                axis_max = maximum(max_array .+ max_σ_array) * 1.1
-                #axs.set_ylim(axis_min, axis_max)
+                axis_min = minimum(max_array .- max_σ_array)
+                axis_max = maximum(max_array .+ max_σ_array)
+                axs[1].set_ylim(axis_min, axis_max)
 
-                offset = 30
-
-                supernova_residual = top_fits_spectra_fit_region[i] .- top_fits_hg_component[i]
-                supernova_residual = supernova_residual .- offset
-                sn_component = top_fits_sn_component[i] .- offset
-
-                axs.plot(top_fits_λ_fit_region[i], supernova_residual, label="Supernova (Spectrum - Host)", color="black")
-                axs.plot(top_fits_λ_fit_region[i], sn_component, label="Pure SN", color="#1289A7")
-                axs.set_xlim(minimum(plotting_original_wavelength) -100, maximum(plotting_original_wavelength) + 100)
-                #axs.set_ylim(minimum(supernova_residual), 1.1 * maximum(binned_plotting_spectra))
-                axs.legend(loc="center", bbox_to_anchor=(0.5, -.15), ncol = 4)
-
-                #Add a second axis to display the rest wavelength
-                x_axis = collect(minimum(plotting_original_wavelength)-100:1:maximum(plotting_original_wavelength)+100)
-
+                # Add a second axis to display the rest wavelength
+                x_axis = collect(minimum(plotting_original_wavelength) - 100:1:maximum(plotting_original_wavelength) + 100)
                 rest_wavelength = x_axis .* (1 + top_fits_sn_redshift[i])
 
-                axs2 = axs.twiny()
-                axs2.tick_params(axis="both", which="major", width=1, length=6, direction="in",  top = true)
-                axs2.tick_params(axis="both", which="minor", width=1, length=4, direction="in",  top = true)
+                axs2 = axs[1].twiny()
+                axs2.tick_params(axis="both", which="major", width=1, length=6, direction="in", top=true)
+                axs2.tick_params(axis="both", which="minor", width=1, length=4, direction="in", top=true)
                 axs2.minorticks_on()
                 axs2.set_xlabel("Observed Wavelength " * "[" * L"\AA" * "]")
-        
-                # Calculate appropriate tick positions for rest wavelengths
-                # Calculate the minimum and maximum rest wavelengths
-                min_rest_wavelength = (minimum(rest_wavelength))
-                max_rest_wavelength = (maximum(rest_wavelength)) 
 
-                # Generate tick positions at intervals of 1000 Angstroms
+                # Calculate appropriate tick positions for rest wavelengths
+                min_rest_wavelength = (minimum(rest_wavelength))
+                max_rest_wavelength = (maximum(rest_wavelength))
+
                 tick_min = ceil(min_rest_wavelength / 1000) * 1000
                 tick_max = floor(max_rest_wavelength / 1000) * 1000
 
                 tick_positions = collect(tick_min:1000:tick_max)
                 tick_positions = round.(tick_positions, digits=0)
 
-                # Set tick labels for the second x-axis
                 axs2.set_xticks(tick_positions)
-                #axs2.set_xticklabels(["$(tick)" for tick in tick_positions])
                 axs2.set_xlim(min_rest_wavelength, max_rest_wavelength)
+
+                supernova_residual = top_fits_spectra_fit_region[i] .- top_fits_hg_component[i]
+                sn_component = top_fits_sn_component[i]
+
+                # Second subplot (supernova component)
+                axs[2].tick_params(axis="both", which="major", width=1, length=6, direction="in", bottom=true, top=true, left=true, right=true)
+                axs[2].tick_params(axis="both", which="minor", width=1, length=4, direction="in", bottom=true, top=true, left=true, right=true)
+                axs[2].minorticks_on()
+
+                axs[2].set_yticklabels([])
+
+                # Plot the supernova component
+                axs[2].plot(top_fits_λ_fit_region[i], supernova_residual, label="Supernova Residual", color="#797A9E", alpha = 0.6)
+                axs[2].plot(top_fits_λ_fit_region[i], sn_component, label="Supernova Component", color="magenta")
+                axs[2].set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
+                axs[2].set_ylabel("Flux [AU]")
+                xlim = axs[1].get_xlim()
+                axs[2].set_xlim(xlim)
+                axs3 = axs[2].twiny()
+                axs3.tick_params(axis="both", which="major", width=1, length=6, direction="in", top=true)
+                axs3.tick_params(axis="both", which="minor", width=1, length=4, direction="in", top=true)
+                axs3.minorticks_on()
+                
+                axs3.set_xticks(tick_positions)
+                axs3.set_xlim(min_rest_wavelength, max_rest_wavelength)
+                axs3.set_xticklabels([])
+
+
+                # Collect all handles and labels from both subplots
+                handles_1, labels_1 = axs[1].get_legend_handles_labels()
+                handles_2, labels_2 = axs[2].get_legend_handles_labels()
+
+                # Combine them
+                handles = vcat(handles_1, handles_2)
+                labels = vcat(labels_1, labels_2)
+
+                # Place a single legend below both subplots
+                fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.05), ncol=3)
+
+
+                # Specify path for PDF output
+                plotpath = joinpath("classifications_dir", "plots", string(SN_ID))
+                if !isdir(plotpath)
+                    mkdir(plotpath)
+                end
+
+                # Save the figure as a PDF
+
 
                 plotpath = joinpath("classifications_dir", "plots", string(SN_ID))
                 if !isdir(plotpath)
                     mkdir(plotpath)
                 end
 
-                plt.savefig(plotpath * "/" * string(SN_ID) * "_fit_" * string(i) * ".png")
+                plt.savefig(plotpath * "/" * string(SN_ID) * "_fit_" * string(i) * ".pdf")
                 plt.close()
-                plt.clf()   
+                plt.clf()
             end
         end
 

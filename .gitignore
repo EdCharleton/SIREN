@@ -23,3 +23,4 @@ python_dir/.DS_Store
 **/.DS_Store
 Hello_World_App/
 SIREN_test_sets/
+julia_dir/SIREN_statistics_DES.jl

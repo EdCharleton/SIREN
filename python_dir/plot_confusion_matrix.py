@@ -1,0 +1,40 @@
+import sklearn
+import json
+import os
+import numpy as np
+import seaborn as sns
+import seaborn as sns
+
+import sklearn.metrics
+
+survey = "SNLS"
+
+# Load the json files
+with open('SIREN_test_sets/statistics/{0}_confusion_matrix.json'.format(survey)) as f:
+    confusion_matrix = json.load(f)
+
+# Define the order of your classes
+SIREN_classes = ["Ia", "Ic", "Ib", "II"]
+survey_classes =["Ia", "Ic", "Ib", "II"]
+
+# Create the confusion matrix as a 2D array
+confusion_matrix_array = []
+
+for survey_label in survey_classes:
+    row = []
+    for SIREN_label in SIREN_classes:
+        row.append(confusion_matrix[survey_label][SIREN_label])
+    confusion_matrix_array.append(row)
+
+# Convert to numpy array (optional, but useful for some sklearn functions)
+confusion_matrix_array = np.array(confusion_matrix_array)
+
+import matplotlib.pyplot as plt
+
+# Plot the confusion matrix with swapped x and y data points
+plt.figure(figsize=(8, 6), dpi=500)
+sns.heatmap(confusion_matrix_array.T, annot=True, fmt=".2f", cmap='Blues', xticklabels=SIREN_classes, yticklabels=survey_classes)
+plt.xlabel('SIREN Classification')
+plt.ylabel('{} Classification'.format(survey))
+plt.title('{} Confusion Matrix'.format(survey))
+plt.savefig('SIREN_test_sets/statistics/{0}_confusion_matrix.png'.format(survey))

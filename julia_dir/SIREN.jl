@@ -14,6 +14,7 @@ using ProgressBars
 using Plots
 using LsqFit
 using PyCall
+using PyPlot
 using Conda
 using LaTeXStrings
 using CSV
@@ -41,7 +42,7 @@ end
 
 #----------------------------------------- READ IN TARGET AND TEMPLATE SPECTRA -----------------------------------------
 
-show_plots = false
+show_plots = true
 delete_plot_folder_contents = false
 
 if delete_plot_folder_contents == true
@@ -54,7 +55,7 @@ println("Loading in Templates...")
 println("----------------------------------------------")
 
 #---------------------------------------Read in all the Transient Templates and metadata-----------------------------------------
-sn_metadata_path = joinpath("SIREN_test_sets/SNLS/SNLS_metadata.csv")
+sn_metadata_path = joinpath("SIREN_test_sets/demo_fits/demo_fits_metadata.csv")
 
 sn_metadata = CSV.read(sn_metadata_path, DataFrame, delim=',')
 
@@ -67,7 +68,7 @@ hg_template_wavs, pure_hg_spectra_files = read_template_files(pure_hg_spectra_fi
 
 
 #read in target spectra
-target_spectra_dict = read_target_spectra("SIREN_test_sets/SNLS/SNLS_ALL_SPECTRA", ',', 0)
+target_spectra_dict = read_target_spectra("SIREN_test_sets/demo_fits/demo_fits_ALL_SPECTRA", ',', 0)
 target_spectra_names = collect(keys(target_spectra_dict))
 
 #Initialise an empty dictionary to store the classifications
@@ -88,7 +89,6 @@ end
 
 for n in (batch_mode ? ProgressBar(target_spectra_names) : (target_spectra_names))
     target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
-
     target_name = splitext(n)[1]
     target_index = findfirst(x -> x == target_name, all_target_names)
 
@@ -115,7 +115,6 @@ for n in (batch_mode ? ProgressBar(target_spectra_names) : (target_spectra_names
 
     elseif target_redshift > 1.0 
         println("Target ", target_name, " has a redshift of ", target_redshift, " which is too high for SIREN")
-        continue
     end 
     
     target_remove_telluric = "N"
@@ -143,7 +142,7 @@ end
 
 
 #Save the classifications as a JSON file
-JSON.open(joinpath("classifications_dir", "SNLS_classifications.json"), "w") do file
+JSON.open(joinpath("classifications_dir", "demo_fits_classifications.json"), "w") do file
     JSON.print(file, classifications)
 end
 

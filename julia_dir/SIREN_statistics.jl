@@ -3,29 +3,39 @@ using DataFrames
 using DataStructures: OrderedDict
 using JSON
 using DelimitedFiles
+using PyCall
 
-#import the two metadata files
+# Import the two metadata files
 
-#Read in the survey metadata
+# Read in the Survey metadata
+survey_name = "SNLS"
 
+SIREN_classes = ["Ia", "Ic", "Ib", "II"]
+Survey_classes = ["Ia", "Ic", "Ib", "II"]
+
+number_of_survey_class = zeros(Int, length(Survey_classes))
+
+misclassifications = Dict{String, Array{String, 1}}()
+
+# Initialize the confusion matrix as an OrderedDict
+confusion_matrix = OrderedDict{String, OrderedDict{String, Float64}}()
+for SIREN_type in SIREN_classes
+    confusion_matrix[SIREN_type] = OrderedDict{String, Float64}()
+    for Survey_type in Survey_classes
+        confusion_matrix[SIREN_type][Survey_type] = 0.0
+    end
+end
+
+classifications_metadata_path = joinpath("classifications_dir", survey_name * "_classifications.json")
+Survey_metadata_path = joinpath("SIREN_test_sets", survey_name, survey_name * "_metadata.csv")
+
+classifications_metadata = JSON.parsefile(classifications_metadata_path)
+Survey_metadata = CSV.read(Survey_metadata_path, DataFrame, delim=',')
+
+# Get the names of the dictionary keys
 
 match = 0
 no_match = 0
-
-classes = ["Ia", "Ic", "Ib", "II"]
-misclassifications = Dict{String, Array{String, 1}}()
-
-confusion_matrix = zeros(Float64, length(classes), length(classes))
-
-
-classifications_metadata_path = joinpath("classifications_dir/SNLS_classifications.json")
-survey_metadata_path = joinpath("SIREN_test_sets/SNLS/SNLS_metadata.csv")
-
-
-classifications_metadata= JSON.parsefile(classifications_metadata_path)
-survey_metadata = CSV.read(survey_metadata_path, DataFrame, delim=',')
-
-#get the names of the dictionary keys
 
 classifications_metadata_keys = keys(classifications_metadata)
 for key in classifications_metadata_keys
@@ -33,7 +43,7 @@ for key in classifications_metadata_keys
     if SIREN_type == "Unknown"
         continue
     end
-    if SIREN_type == "91T-like" || SIREN_type == "91bg-like" || SIREN_type == "91bg" || SIREN_type == "91T" || SIREN_type == "SN91T-like" ||SIREN_type == "SN91t-like" || SIREN_type == "91t-like"
+    if SIREN_type == "91T-like" || SIREN_type == "91bg-like" || SIREN_type == "91bg" || SIREN_type == "91T" || SIREN_type == "SN91T-like" || SIREN_type == "SN91t-like" || SIREN_type == "91t-like"
         SIREN_type = "Ia"
     
     elseif SIREN_type == "IIP" || SIREN_type == "IIL" || SIREN_type == "IIn" || SIREN_type == "IIb"
@@ -42,88 +52,74 @@ for key in classifications_metadata_keys
     elseif SIREN_type == "Ic-BL"
         SIREN_type = "Ic"
     end
-    survey_type = survey_metadata[!, "Obj. Type"][findfirst(x -> x == key, survey_metadata[!, "Ascii file"])]
+    Survey_type = Survey_metadata[!, "Obj. Type"][findfirst(x -> x == key, Survey_metadata[!, "Ascii file"])]
 
-    #Strip any whitespace from the survey type
-    survey_type = replace(survey_type, " " => "")
-    survey_type = replace(survey_type, "?" => "")
+    # Strip any whitespace from the Survey type
+    Survey_type = replace(Survey_type, " " => "")
+    Survey_type = replace(Survey_type, "?" => "")
+    Survey_type = replace(Survey_type, "SN" => "")
 
-    survey_type = replace(survey_type, "SN" => "")
-
-    if survey_type in ["Ia-91T-like", "Ia-91bg-like"]
-        survey_type = "Ia"
-    elseif survey_type in ["Ibn"]
-        survey_type = "Ib"
-    elseif survey_type in ["IIn", "IIL", "IIP", "IIn-pec", "IIn-09ip", "II-pec", "IIb"]
-        survey_type = "II"
-    elseif survey_type == "Ic-BL"
-        survey_type = "Ic"
-    elseif survey_type in ["SLSN-I", "SLSN-II", "SL-I", ""]
+    if Survey_type in ["Ia-91T-like", "Ia-91bg-like"]
+        Survey_type = "Ia"
+    elseif Survey_type in ["Ibn"]
+        Survey_type = "Ib"
+    elseif Survey_type in ["IIn", "IIL", "IIP", "IIn-pec", "IIn-09ip", "II-pec", "IIb"]
+        Survey_type = "II"
+    elseif Survey_type == "Ic-BL"
+        Survey_type = "Ic"
+    elseif Survey_type in ["SLSN-I", "SLSN-II", "SL-I", ""]
         continue
-    elseif isnothing(survey_type)
+    elseif isnothing(Survey_type)
         continue
     end
 
-    #If Ib/c mark as correct if either Ib or Ic
-    if survey_type == "Ib/c" && (SIREN_type == "Ib" || SIREN_type == "Ic")
-        survey_type = SIREN_type
+    # If Ib/c mark as correct if either Ib or Ic
+    if Survey_type == "Ib/c" && (SIREN_type == "Ib" || SIREN_type == "Ic")
+        Survey_type = SIREN_type
     end
 
-    println("survey: ", survey_type, " SIREN: ", SIREN_type)
-
-
-    #Add to the confusion matrix
-    if survey_type in classes
-        survey_index = findfirst(x -> x == survey_type, classes)
-        SIREN_index = findfirst(x -> x == SIREN_type, classes)
-        confusion_matrix[survey_index, SIREN_index] += 1
+    # Add to the confusion matrix
+    if SIREN_type in SIREN_classes && Survey_type in Survey_classes
+        confusion_matrix[SIREN_type][Survey_type] += 1
+        Survey_index = findfirst(x -> x == Survey_type, Survey_classes)
+        number_of_survey_class[Survey_index] += 1
     end
 
-    if survey_type == SIREN_type
+    if Survey_type == SIREN_type
         global match += 1
     else
-        #export the names of the misclassified objects, what it was classified as and what it should have been classified as
-        misclassifications[key] = [SIREN_type, survey_type]
+        # Export the names of the misclassified objects, what it was classified as and what it should have been classified as
+        misclassifications[key] = [SIREN_type, Survey_type]
         global no_match += 1
     end
 end
 
-println(length(misclassifications))
+# Normalize the confusion matrix
+for SIREN_type in SIREN_classes
+    for Survey_type in Survey_classes
+        if number_of_survey_class[findfirst(x -> x == Survey_type, Survey_classes)] > 0
+            confusion_matrix[SIREN_type][Survey_type] /= number_of_survey_class[findfirst(x -> x == Survey_type, Survey_classes)]
+        end
+    end
+end
 
-
-confusion_matrix = replace(confusion_matrix, NaN => 0)
-
-#Normalise the confusion matrix
-number_of_survey = sum(confusion_matrix, dims=1)
-
-#Normalise the confusion matrix
-confusion_matrix = confusion_matrix ./ number_of_survey
-
-#print the matched and unmatched counts
+# Print the matched and unmatched counts
 println("Matched: ", match)
 println("Not Matched: ", no_match)
 
-#and as a percemtage
+# And as a percentage
 println("Matched: ", match / (match + no_match) * 100, "%")
 
-#plot the confusion matrix
-using Plots
-#Flip the y axis
-heatmap(classes, classes, confusion_matrix, aspect_ratio=1, c=:viridis, xlabel="SIREN Classification", ylabel="survey Classification", title="Confusion Matrix", fmt=:png, size=(800, 800), dpi=300, xrotation=45, yrotation=45)
-#print the numbers on the heatmap
-for i in 1:length(classes)
-for j in 1:length(classes)
-    annotate!(i-0.5, j-0.5, text(string(round(confusion_matrix[i, j], digits = 2)), :black, :center, 10))
-end
+println(confusion_matrix)
+
+# Save the confusion matrix to a json file
+confusion_matrix_path = joinpath("SIREN_test_sets/statistics", survey_name * "_confusion_matrix.json")
+open(confusion_matrix_path, "w") do io
+    JSON.print(io, confusion_matrix)
 end
 
-# Display the plot
-display(current())
-
-println("Number of each survey classifications", number_of_survey)
-
-#export the misclassifications
-misclassifications_path = joinpath("SIREN_test_sets/misclassifications.json")
+# Export the misclassifications
+misclassifications_path = joinpath("SIREN_test_sets/statistics", survey_name * "_misclassifications.json")
 open(misclassifications_path, "w") do io
-JSON.print(io, misclassifications)
+    JSON.print(io, misclassifications)
 end
