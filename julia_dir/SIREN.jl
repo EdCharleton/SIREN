@@ -23,7 +23,9 @@ matplotlib = pyimport("matplotlib")
 plt = pyimport("matplotlib.pyplot")
 rcParams = matplotlib[:rcParams]
 
+#---------------------------------------------- USER INPUT --------------------------------------------------------
 
+data_name = "Dwayne"
 
 #Set up threading for julia
 ENV["JULIA_NUM_THREADS"] = "auto"
@@ -40,6 +42,8 @@ pure_hg_spectra_file_names = open(joinpath("host_template_dir", "metadata","pure
     readlines(file)
 end
 
+#missclassifications = JSON.parsefile("SIREN_test_sets/$(data_name)/$(data_name)_Misclassifications.json") #DELETE LATER
+
 #----------------------------------------- READ IN TARGET AND TEMPLATE SPECTRA -----------------------------------------
 
 show_plots = true
@@ -55,11 +59,11 @@ println("Loading in Templates...")
 println("----------------------------------------------")
 
 #---------------------------------------Read in all the Transient Templates and metadata-----------------------------------------
-sn_metadata_path = joinpath("SIREN_test_sets/demo_fits/demo_fits_metadata.csv")
+sn_metadata_path = joinpath("SIREN_test_sets/$data_name/$(data_name)_metadata.csv")
 
 sn_metadata = CSV.read(sn_metadata_path, DataFrame, delim=',')
 
-all_target_names = sn_metadata[!, "Ascii file"]
+all_target_names = sn_metadata[!, "File Name"]
 
 telluric_mask = readdlm(joinpath("real_spectra_dir", "metadata", "tellurics.txt"))
 
@@ -68,7 +72,8 @@ hg_template_wavs, pure_hg_spectra_files = read_template_files(pure_hg_spectra_fi
 
 
 #read in target spectra
-target_spectra_dict = read_target_spectra("SIREN_test_sets/demo_fits/demo_fits_ALL_SPECTRA", ',', 0)
+target_spectra_dict = read_target_spectra("SIREN_test_sets/$data_name/$(data_name)_ALL_SPECTRA", ',', 0)
+#target_spectra_dict = read_target_spectra("SIREN_test_sets/$data_name/$(data_name)_Misclassifications", ',', 0) #DELETE LATER
 target_spectra_names = collect(keys(target_spectra_dict))
 
 #Initialise an empty dictionary to store the classifications
@@ -106,27 +111,33 @@ for n in (batch_mode ? ProgressBar(target_spectra_names) : (target_spectra_names
         continue
     end
 
-
     target_redshift = sn_metadata[target_index, "Redshift"]
 
-    if ismissing(target_redshift)
-        println("Target ", target_name, " has no redshift information")
-        continue
-
+    if !isnothing(target_redshift) && batch_mode == false
+        println("Target ", target_name, " has no redshift information, fitting for z")
     elseif target_redshift > 1.0 
         println("Target ", target_name, " has a redshift of ", target_redshift, " which is too high for SIREN")
+        continue
     end 
     
-    target_remove_telluric = "N"
+    target_remove_telluric = sn_metadata[target_index, "REMOVE_TELLURIC"]
 
     if batch_mode == false
         println("Classifying ", target_name, "...")
     end
     
+    #true_type = missclassifications[target_name]
+    #if true_type[2 ] == "Ib/c" 
+    #    true_type[2] = "Ib_c"
+    #elseif true_type[2] == "Ib/c-Ca-rich"
+    #    true_type[2] = "Ib_c_Ca_rich"
+    #end
+    #target_name = true_type[2] * "_" * target_name
+    
 
     best_params, chi_red, path, z, type = chi_squared_classifier(
         pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files,
-        sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift[1], telluric_mask, batch_mode, show_plots, target_remove_telluric)
+        sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift, telluric_mask, batch_mode, show_plots, target_remove_telluric)
 
     if batch_mode == false
         println("SN Name           : ", target_name)
@@ -142,7 +153,7 @@ end
 
 
 #Save the classifications as a JSON file
-JSON.open(joinpath("classifications_dir", "demo_fits_classifications.json"), "w") do file
+JSON.open(joinpath("classifications_dir", "$(data_name)_classifications.json"), "w") do file
     JSON.print(file, classifications)
 end
 

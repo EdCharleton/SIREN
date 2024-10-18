@@ -512,7 +512,7 @@ module ClassifierFunctions
 
         # Remove any emission lines from the spectrum
         window_indexes = 8
-        σ_threshold = 2.5
+        σ_threshold = 2.6
         emission_line_λ, emission_line_flux,  output_spectra_λ, output_spectra, output_spectra_σ = remove_emission_lines(
             input_spectra_λ, 
             input_spectra, 
@@ -669,11 +669,15 @@ module ClassifierFunctions
 
         redshift_max = 0.6
 
-        if target_redshift > redshift_max
-            redshift_max = round(target_redshift, digits = 2)
+        if ismissing(target_redshift)
+            redshift_max = 0.6
+        else
+            if target_redshift > 0.6
+                redshift_max = target_redshift
+            else
+                redshift_max = 0.6
+            end
         end
-        #Loop through the redshift range of z=0.0 to z=0.6
-        redshift_max = 0.6
         redshift_range = collect(0.00:0.01:redshift_max)
         
         for z in (batch_mode ? redshift_range : ProgressBar(redshift_range))
@@ -684,7 +688,7 @@ module ClassifierFunctions
 
             #Check if there is a provided redshift value
 
-            if round(target_redshift, digits = 2) == 999
+            if ismissing(target_redshift)
         
             else
                 if round(z, digits = 2) != round(target_redshift, digits = 2)
@@ -839,13 +843,18 @@ module ClassifierFunctions
         top_fits_phase = [pure_sn_spectra_info["tau"][pure_sn_spectra_file_names[i]] for i in top_fits_indices[fits, 1]]
         
         plotpath = "No Plot Saved"
+        best_chi = argmin(top_fits_chi_red)
+
+        if isempty(top_fits_sn_type)
+            show_plot = false
+        end
 
         if show_plot == true
             # Adjust rcparams
             rcParams = matplotlib["rcParams"]
             rcParams["axes.linewidth"] = 3
 
-            plt.rcParams["font.size"] = 24        # Set global font size
+            plt.rcParams["font.size"] = 18        # Set global font size
             plt.rcParams["axes.labelsize"] = 22    # Set font size for axis labels
             plt.rcParams["xtick.labelsize"] = 22   # Set font size for x-axis ticks
             plt.rcParams["ytick.labelsize"] = 22   # Set font size for y-axis ticks
@@ -854,8 +863,8 @@ module ClassifierFunctions
 
             number_of_plots = length(fits)
             #Create multiple new plots of the top 5 fits ----------------------------------------------------------------
-            for i in 1:number_of_plots
-
+            for i in 1:1
+                i = best_chi #################################### #DELETE WHEN DONE TESTING#####################################################################
                 #Defines whether to set the phase as τ or t0
                 if top_fits_phase[i] == "N/A"
                     top_fits_phase[i] = pure_sn_spectra_info["t0"][pure_sn_spectra_file_names[top_fits_indices[i, 1]]]
@@ -890,6 +899,7 @@ module ClassifierFunctions
                 #----------------------------------------------------------------------------------------------------------------
                 # Set A4 size in inches
                 a4_width, a4_height = 8.27, 11.69
+                #a4_width, a4_height = 8.27, 8.27
 
                 fig, axs = plt.subplots(nrows=2, ncols=1, figsize=(a4_width, a4_height), dpi=400)  # A4 size
                 plt.subplots_adjust(hspace=0, top=0.85, bottom=0.15)
@@ -900,27 +910,43 @@ module ClassifierFunctions
                 axs[1].minorticks_on()
 
                 host_frac = round(contam_frac[i], digits=0)
-                host_frac = Int(host_frac)
-                fig.suptitle(string(SN_ID) * L": \chi^2_\nu = " * string(round(top_fits_chi_red[i], digits=2)) * ", SN = Type " * string(top_fits_sn_type[i]) * ", Host = " * string(top_fits_hg_type[i]) * ", z = " * string(round(top_fits_sn_redshift[i], digits=2)) * "\n" * "HG Contam = " * string(host_frac) * "%" * phase_display, fontsize=18)
+                try
+                    host_frac = Int(host_frac)
+                catch
+                    host_frac = Int(999)
+                end
+
+                if length(SN_ID) > 20
+                    plot_title1 = SN_ID[1:20]
+                    plot_title2 = SN_ID[21:end]
+                    fig.suptitle(string(plot_title1) * "\n" * string(plot_title2) * "\n" * L": \chi^2_\nu = "  * string(round(top_fits_chi_red[i], digits=2)) * ", SN = Type " * string(top_fits_sn_type[i]) * ", Host = " * string(top_fits_hg_type[i]) * ", z = " * string(round(top_fits_sn_redshift[i], digits=2)) * "\n" * "HG Contam = " * string(host_frac) * "%" * phase_display, fontsize=18)
+                else
+                    fig.suptitle("Example Fit of SIREN on a" * "\n" * "Spectrum with Incorrect Errors", fontsize=18)
+                    fig.suptitle(string(SN_ID) * L": \chi^2_\nu = "  * string(round(top_fits_chi_red[i], digits=2)) * ", SN = Type " * string(top_fits_sn_type[i]) * ", Host = " * string(top_fits_hg_type[i]) * ", z = " * string(round(top_fits_sn_redshift[i], digits=2)) * "\n" * "HG Contam = " * string(host_frac) * "%" * phase_display, fontsize=18)
+                end
 
                 # First subplot (original spectrum)
-                axs[1].fill_between(plotting_original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12)
-                axs[1].fill_between(binned_plotting_λ, binned_plotting_spectra .- binned_plotting_spectra_σ, binned_plotting_spectra .+ binned_plotting_spectra_σ, color="black", alpha=0.5)
+                axs[1].fill_between(plotting_original_wavelength, (original_altered_spectra .- original_altered_spectra_σ)[:, 1], (original_altered_spectra .+ original_altered_spectra_σ)[:, 1], color="black", alpha=0.12, label = "Original Spectrum σ")
+                axs[1].fill_between(binned_plotting_λ, binned_plotting_spectra .- binned_plotting_spectra_σ, binned_plotting_spectra .+ binned_plotting_spectra_σ, color="black", alpha=0.5, label = "Binned Spectrum σ")
                 axs[1].plot(plotting_original_wavelength, original_altered_spectra, label="Original Spectrum", color="black", alpha=0.2)
                 axs[1].plot(binned_plotting_λ, binned_plotting_spectra, label="Binned Spectrum", color="black", alpha=0.7)
                 axs[1].plot(top_fits_λ_fit_region[i], top_fits_best_fits[i], label="Best fit", color="red")
 
                 axs[1].set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
-                axs[1].set_ylabel("Flux [AU]")
+                axs[1].set_ylabel("Flux")
 
                 axs[1].set_yticklabels([])
 
                 plotting_nans = isnan.(binned_plotting_spectra)
                 max_array = (binned_plotting_spectra[.!plotting_nans])
                 max_σ_array = (binned_plotting_spectra_σ[.!plotting_nans])
-                axis_min = minimum(max_array .- max_σ_array)
-                axis_max = maximum(max_array .+ max_σ_array)
-                axs[1].set_ylim(axis_min, axis_max)
+                try
+                    axis_min = minimum(max_array .- max_σ_array)
+                    axis_max = maximum(max_array .+ max_σ_array)
+                    axs[1].set_ylim(axis_min, axis_max)
+                catch
+                end
+
 
                 # Add a second axis to display the rest wavelength
                 x_axis = collect(minimum(plotting_original_wavelength) - 100:1:maximum(plotting_original_wavelength) + 100)
@@ -957,9 +983,9 @@ module ClassifierFunctions
 
                 # Plot the supernova component
                 axs[2].plot(top_fits_λ_fit_region[i], supernova_residual, label="Supernova Residual", color="#797A9E", alpha = 0.6)
-                axs[2].plot(top_fits_λ_fit_region[i], sn_component, label="Supernova Component", color="magenta")
+                axs[2].plot(top_fits_λ_fit_region[i], sn_component, label="Best Fit (SN)", color="magenta")
                 axs[2].set_xlabel("Rest Wavelength " * "[" * L"\AA" * "]")
-                axs[2].set_ylabel("Flux [AU]")
+                axs[2].set_ylabel("Flux")
                 xlim = axs[1].get_xlim()
                 axs[2].set_xlim(xlim)
                 axs3 = axs[2].twiny()
@@ -981,24 +1007,18 @@ module ClassifierFunctions
                 labels = vcat(labels_1, labels_2)
 
                 # Place a single legend below both subplots
-                fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.05), ncol=3)
-
-
-                # Specify path for PDF output
-                plotpath = joinpath("classifications_dir", "plots", string(SN_ID))
-                if !isdir(plotpath)
-                    mkdir(plotpath)
-                end
+                fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.0), ncol=4)
 
                 # Save the figure as a PDF
 
-
-                plotpath = joinpath("classifications_dir", "plots", string(SN_ID))
+                plotpath = joinpath("classifications_dir", "plots", "Dwayne")
+                #plotpath = joinpath("classifications_dir", "plots", "SNLS") #DELETE LATER
                 if !isdir(plotpath)
                     mkdir(plotpath)
                 end
 
-                plt.savefig(plotpath * "/" * string(SN_ID) * "_fit_" * string(i) * ".pdf")
+                plt.savefig(plotpath * "/" * string(SN_ID) * ".pdf") 
+                #plt.savefig(plotpath * "/" * string(SN_ID) * ".pdf") #Delete Later
                 plt.close()
                 plt.clf()
             end
