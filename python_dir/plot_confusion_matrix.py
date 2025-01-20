@@ -8,9 +8,10 @@ import seaborn as sns
 import sklearn.metrics
 
 survey = "Dwayne"
+iteration = "3"
 
 # Load the json files
-with open('SIREN_test_sets/statistics/{0}_confusion_matrix.json'.format(survey)) as f:
+with open('SIREN_test_sets/statistics/{0}{1}_confusion_matrix.json'.format(survey, iteration)) as f:
     confusion_matrix = json.load(f)
 
 print(confusion_matrix)
@@ -36,7 +37,7 @@ import matplotlib.pyplot as plt
 # Plot the confusion matrix with swapped x and y data points
 plt.figure(figsize=(8, 6), dpi=500)
 sns.heatmap(confusion_matrix_array, annot=True, fmt=".2f", cmap='Blues', xticklabels=survey_classes, yticklabels=SIREN_classes)
-plt.xlabel('{} Classification'.format(survey))
+plt.xlabel('{} 3 Classifications'.format(survey))
 plt.ylabel('SIREN Classification')
 plt.title('{} Confusion Matrix'.format(survey))
 plt.savefig('SIREN_test_sets/statistics/{0}_confusion_matrix.png'.format(survey))

@@ -2,7 +2,7 @@
 
 julia_version = "1.9.3"
 manifest_format = "2.0"
-project_hash = "17bf23c2fccc66e11938db86eb375be76ae16a9c"
+project_hash = "5bf612e6f43f20c9c5505ed32c9dbcf9f407f277"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -1816,6 +1816,12 @@ deps = ["Distances", "Hungarian", "SMLMData", "SparseArrays", "Statistics"]
 git-tree-sha1 = "603cb62be6ebc406a9ca3f48110c7e5a52b0edc6"
 uuid = "0dae9b29-4590-421e-953b-e41aa0457150"
 version = "0.1.3"
+
+[[deps.SavitzkyGolay]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "95b73ab0d01f880e00c7ee62405aecf8b1d0ed57"
+uuid = "c4bf5708-b6a6-4fbe-bcd0-6850ed671584"
+version = "0.8.0"
 
 [[deps.Scratch]]
 deps = ["Dates"]

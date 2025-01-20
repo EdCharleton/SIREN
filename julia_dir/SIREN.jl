@@ -76,6 +76,7 @@ target_spectra_dict = read_target_spectra("SIREN_test_sets/$data_name/$(data_nam
 #target_spectra_dict = read_target_spectra("SIREN_test_sets/$data_name/$(data_name)_Misclassifications", ',', 0) #DELETE LATER
 target_spectra_names = collect(keys(target_spectra_dict))
 
+
 #Initialise an empty dictionary to store the classifications
 classifications = OrderedDict()
 
@@ -113,9 +114,7 @@ for n in (batch_mode ? ProgressBar(target_spectra_names) : (target_spectra_names
 
     target_redshift = sn_metadata[target_index, "Redshift"]
 
-    if !isnothing(target_redshift) && batch_mode == false
-        println("Target ", target_name, " has no redshift information, fitting for z")
-    elseif target_redshift > 1.0 
+    if target_redshift > 1.0 
         println("Target ", target_name, " has a redshift of ", target_redshift, " which is too high for SIREN")
         continue
     end 

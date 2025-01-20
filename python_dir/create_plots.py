@@ -5,7 +5,7 @@ import pandas as pd
 import tqdm
 
 
-survey_name = 'DES'
+survey_name = 'Dwayne'
 metadata_path = os.path.join('SIREN_test_sets/{0}/{0}_metadata.csv'.format(survey_name)) 
 
 #load metadata
@@ -13,13 +13,13 @@ survey_metadata = pd.read_csv(metadata_path)
 
 #phases = pd.to_numeric(survey_metadata['Phase (days)'].values, errors='coerce')
 redshifts = pd.to_numeric(survey_metadata['Redshift'].values, errors='coerce')
-all_types = survey_metadata['Obj. Type'].values
+all_types = survey_metadata['Type'].values
 
 
-condition = np.where((all_types != "SNIa"))[0]
-condition_name = 'Non Ias'
+condition = np.where((all_types == "SN II"))[0]
+condition_name = 'IIs'
 
-file_names = survey_metadata['Ascii file'].values[condition]
+file_names = survey_metadata['File Name'].values[condition]
 redshifts = survey_metadata['Redshift'].values[condition]
 types = all_types[condition]
 #3phase_vals = phases[condition]
@@ -42,10 +42,12 @@ for name in tqdm.tqdm(file_names):
         redshift = redshifts[np.where(file_names == name)]
         type = types[np.where(file_names == name)]
 
-        plt.figure(dpi=150)
+        plt.figure(dpi=300, figsize=(8, 9))  # Set aspect ratio to portrait
         plt.title("{0} \n Redshift: {1} - Type: {2} Phase (days):".format(name, redshift, type))
         plt.plot(spectrum[:,0], spectrum[:,1])
-        plt.savefig('SIREN_test_sets/{0}/{2}/{1}.png'.format(survey_name, name, condition_name))
+        plt.xlabel(r'Wavelength ($\AA$)')
+        plt.ylabel("Flux (AU)")
+        plt.savefig('SIREN_test_sets/JC_plots/{0}.png'.format(name))
         plt.close()
     except:
         continue

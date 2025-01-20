@@ -265,12 +265,13 @@ print('---------------------------')
 pure_hg_spectra_dict = {}
 
 #Import the host galaxy flux and wavelength and shift to match the redshift to that of the supernova
-host_galaxy_directory = 'host_galaxy_gen_dir/hg_spectra_from_NGSF_Dir'
+host_galaxy_directory = 'host_galaxy_gen_dir/swire_library'
 host_galaxy_names = os.listdir(host_galaxy_directory)
 number_of_host_galaxies = len(host_galaxy_names)
 
 #Define the dust parameters
 extinction_range = np.arange(-.6, .6, 0.2) # Redenning equivalent to ~ -0.2 E(B-V) to 0.2 E(B-V)
+print(extinction_range)
 r_v = 3.1
 dust_law = "ccm89" #Use the CCM89 dust law (Cardelli, Clayton, Mathis 1989)
 

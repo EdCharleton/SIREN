@@ -29,6 +29,7 @@ module ClassifierFunctions
     using CSV
     using FITSIO
     using Distributed
+    using SavitzkyGolay
 
     #using DuckDB
 
@@ -152,6 +153,19 @@ module ClassifierFunctions
     
         return content, imported
     end
+
+    #------------------- Savitsky-Golet Spectra smoothing function -------------------
+    function calculate_spectral_error(spectra, window_size)
+        smoothed_spectra_sg = savitzky_golay(spectra, window_size, 2)
+        smoothed_spectra = smoothed_spectra_sg.y
+        error = abs.(spectra .- smoothed_spectra)
+        plt.plot(spectra)
+        plt.plot(smoothed_spectra)
+        #plt.fill_between(1:length(spectra), spectra - error, spectra + error, alpha = 0.5)
+        plt.savefig("error.png")
+        plt.close()
+        return error
+    end
     
 
     #------------------- Read in target spectra -------------------
@@ -161,12 +175,12 @@ module ClassifierFunctions
 
         for filename in ProgressBar(readdir(directory))
             skip = skip_header
-            if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".ascii") || endswith(filename, ".csv") || endswith(filename, ".list") || endswith(filename, ".flm") || endswith(filename, ".asci")
+            #Loading in .txt type files
+            if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".ascii") || endswith(filename, ".csv") || endswith(filename, ".list") || endswith(filename, ".flm") || endswith(filename, ".asci") || endswith(filename, ".clean") || endswith(filename, ".asc")
                 #println(filename, " ", skip)
                 file_path = joinpath(directory, filename)
 
                 imported = false
-                
                 while !imported
                     if endswith(filename, ".csv")
                         content = CSV.read(file_path, DataFrame)
@@ -213,8 +227,12 @@ module ClassifierFunctions
                 if !no_errs
                     spectra_σ = (spectra_σ ./ scaler)
                 else
-                    spectra_σ = sqrt.(spectra) 
+                    spectra_σ = calculate_spectral_error(spectra, 25)
                 end
+
+                plt.plot(λ, spectra)
+                plt.fill_between(λ, spectra - spectra_σ, spectra + spectra_σ, alpha = 0.5)
+                plt.show()
 
                 files_dict[filename] = (λ, spectra, spectra_σ)
 
@@ -257,6 +275,12 @@ module ClassifierFunctions
                 spectra_σ = (spectra_σ ./ scaler) .* 100
     
                 files_dict[filename] = (λ, spectra, spectra_σ)
+
+            else
+                println(" ")
+                printstyled("ERROR: File type not supported - ", color=:red)
+                println("$filename")
+                println(" ")
             end
     
         end
@@ -599,8 +623,12 @@ module ClassifierFunctions
     #------------------- Find the best fit parameters -----------------------------
 
     function calculate_B(F_obs, F_SN, F_HG, sigma)
+        #println(minimum(F_obs)," ", maximum(F_obs))
+        #println(minimum(F_SN)," ", maximum(F_SN))
+        #println(minimum(F_HG)," ", maximum(F_HG))
+        #println(minimum(sigma)," ", maximum(sigma))
+        #println(" ")
         numerator = sum(((F_SN .* F_obs)./sigma.^2) .- ((F_HG .* F_SN ./ sigma.^2).*(sum(F_HG .* F_obs ./ sigma.^2) / sum(F_HG.^2 ./ sigma.^2))))
-
         denominator = sum((F_SN.^2 ./ sigma.^2)  .- (F_HG.* F_SN ./ sigma.^2).* (sum(F_HG .* F_SN ./ sigma.^2) / sum(F_HG.^2 ./ sigma.^2)))
         B = numerator / denominator
         return B
@@ -667,7 +695,7 @@ module ClassifierFunctions
             remove_telluric
         )
 
-        redshift_max = 0.6
+        redshift_max = 0.8
 
         if ismissing(target_redshift)
             redshift_max = 0.6
@@ -678,6 +706,7 @@ module ClassifierFunctions
                 redshift_max = 0.6
             end
         end
+        
         redshift_range = collect(0.00:0.01:redshift_max)
         
         for z in (batch_mode ? redshift_range : ProgressBar(redshift_range))
@@ -709,7 +738,6 @@ module ClassifierFunctions
                 hg_templates, 
                 z, 
                 hg_wavelength, original_λ)
-            
 
             deep_copy_spectra = deepcopy(spectra_to_fit)
             deep_copy_spectra_σ = deepcopy(spectra_to_fit_σ)
