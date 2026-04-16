@@ -11,7 +11,7 @@ using FilePathsBase
 
 # Read in the Survey metadata
 survey_name = "Dwayne"
-iteration = "3"
+iteration = "7"
 
 SIREN_classes = ["Ia", "Ic", "Ib", "II"]
 Survey_classes = ["Ia", "Ic", "Ib", "II"]
@@ -85,24 +85,24 @@ for key in ProgressBar(classifications_metadata_keys)
     Survey_type = replace(Survey_type, "?" => "")
     Survey_type = replace(Survey_type, "SN" => "")
 
-    if Survey_type in ["Ia-91T-like", "Ia-91bg-like", "-Ia-91bg-like", "91-bg-like", "Ia-pec", "Ia"]
+    if Survey_type in ["Ia-91T-like", "Ia-91bg-like", "-Ia-91bg-like", "91-bg-like", "Ia-pec", "Ia", "Ca_Ia", "Ia 02es-like", "Ia 99aa-like", "Ia-02cx like", "Ia-CSM", "Ia-CSM-(ambigious)", "Ia-pec", "Ia-rapid"]
         Survey_type = "Ia"
-    elseif Survey_type in ["Ibn", "Ib"]
+    elseif Survey_type in ["Ibn", "Ib", "Ca-Ib"]
         Survey_type = "Ib"
-    elseif Survey_type in ["IIn", "IIL", "IIP", "IIn-pec", "IIn-09ip", "II-pec", "IIb", "II"]
+    elseif Survey_type in ["IIn", "IIL", "IIP", "IIn-pec", "IIn-09ip", "II-pec", "IIb", "II", "II-flash", "IIn"]
         Survey_type = "II"
     elseif Survey_type in ["Ib-pec", "Ib/c"]
         Survey_type = "Ib"
-    elseif Survey_type in ["Ic-BL", "Ic"]
+    elseif Survey_type in ["Ic-BL", "Ic", "Ic-pec"]
         Survey_type = "Ic"
-    elseif Survey_type in ["SLSN-I", "SLSN-II", "SL-I", ""]
+    elseif Survey_type in ["SLSN-I", "SLSN-II", "SL-I", "SLSN-Ib", "computed", "CV", "FBOT", "ILRT", "SLSN-IIn", "SLSN-IIb", "SLSN-IIn", "SN - Imposter", ]
         continue
     elseif isnothing(Survey_type)
         println(key)
         continue
     else
         @warn "Error finding survey type for $key: $Survey_type"
-    end
+    end§
 
     # If Ib/c mark as correct if either Ib or Ic
     if Survey_type == "Ib/c" && (SIREN_type == "Ib" || SIREN_type == "Ic")

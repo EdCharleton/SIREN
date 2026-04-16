@@ -26,3 +26,9 @@ SIREN_test_sets/
 julia_dir/SIREN_statistics_DES.jl
 swire_library/
 testing_dir/
+sne_supersnid/
+transient_template_dir_full/
+SIREN_APP/
+all_templates/
+spectra_to_classify/
+SIREN_APP/
