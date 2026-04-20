@@ -120,7 +120,7 @@ module ClassifierFunctions
         return content, imported
     end
 
-    function plot_best_fit(SN_ID,
+    function plot_best_fit(SN_ID, z,
     indexes, pure_sn_spectra_info, pure_sn_spectra_file_names,
     pure_hg_spectra_info, pure_hg_spectra_file_names,
     original_spectrum, original_spectrum_σ, original_spectrum_λ,
@@ -200,22 +200,22 @@ module ClassifierFunctions
 
         # Binned spectrum
         plot!(p[1],
-            binned_λ, binned_flux,
+            binned_λ .* (1+z), binned_flux,
             linewidth = 1,
             linecolor = :black,
-            label = "Binned"
+            label = "Binned + Processed"
         )
 
         # Best fit — uses its own λ axis so it covers exactly where it was computed
         plot!(p[1],
-            fit_λ, best_fit,
+            fit_λ .* (1+z), best_fit,
             linecolor = :red,
             linewidth = 1.5,
             label = "Best Fit ($sn_type + $hg_type)"
         )
 
         plot!(p[1],
-            fit_λ, sn_comp,
+            fit_λ .* (1+z), sn_comp,
             linecolor = :blue,
             linewidth = 1.0,
             linestyle = :dash,
@@ -223,7 +223,7 @@ module ClassifierFunctions
         )
 
         plot!(p[1],
-            fit_λ, hg_comp,
+            fit_λ .* (1+z), hg_comp,
             linecolor = :orange,
             linewidth = 1.0,
             linestyle = :dash,
@@ -266,10 +266,10 @@ module ClassifierFunctions
         start_end_window = Int((window_size / 2) - 0.5)
         
         #Create new arrays to populate
-        new_spectra = zeros(Float16, Int(length(spectra) - 2 * start_end_window))
-        new_spectra_λ = zeros(Float16, Int(length(spectra_λ) - 2 * start_end_window))
-        new_sigma = zeros(Float16, Int(length(residual) - 2 * start_end_window))
-        new_smoothed_spectra = zeros(Float16, Int(length(smoothed_spectra) - 2 * start_end_window))
+        new_spectra = zeros(Float32, Int(length(spectra) - 2 * start_end_window))
+        new_spectra_λ = zeros(Float32, Int(length(spectra_λ) - 2 * start_end_window))
+        new_sigma = zeros(Float32, Int(length(residual) - 2 * start_end_window))
+        new_smoothed_spectra = zeros(Float32, Int(length(smoothed_spectra) - 2 * start_end_window))
     
         for i in 1:length(new_spectra)
             old_array_index = i + start_end_window
@@ -287,7 +287,7 @@ module ClassifierFunctions
     end
     
     function read_target_spectra(directory::String, delimiter::Char = ',', skip_header::Int = 0)
-        files_dict = Dict{String, Tuple{Vector{Float16}, Vector{Float16}, Vector{Float16}}}()
+        files_dict = Dict{String, Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}}()
         println("Loading in Target Spectra...")
 
         skip = skip_header
@@ -591,58 +591,54 @@ module ClassifierFunctions
         return input_spectra_λ, input_spectra, input_spectra_σ,  telluric_mask, plotting_telluric
     end
     #------------------- Remove Galaxy Features -------------------
-
     function remove_emission_lines(input_spectra_λ, input_spectra, input_spectra_σ, window_size, σ)
-        original_spectra = deepcopy(input_spectra)
+
+        original_spectra   = deepcopy(input_spectra)
         original_spectra_λ = deepcopy(input_spectra_λ)
         original_spectra_σ = deepcopy(input_spectra_σ)
 
-        for i in 1:5
+        half = window_size ÷ 2
 
-            emission_line = fill(NaN, length(input_spectra))
-            emission_line_λ= fill(NaN, length(input_spectra))
+        for iter in 1:10
+            n       = length(input_spectra)
+            flagged = fill(false, n)
 
-            rolling_average = [mean(input_spectra[i:i+window_size]) for i in 1:(length(input_spectra)-window_size)]
-            rolling_sigma = [std(input_spectra[i:i+window_size]) for i in 1:(length(input_spectra)-window_size)]
+            for i in 1:n
+                lo = max(1, i - half)
+                hi = min(n, i + half)
+                window_flux = input_spectra[lo:hi]
 
-            for i in 1:length(input_spectra)-window_size
-                if input_spectra[i] > (rolling_average[i] + (σ * rolling_sigma[i]))
-                    emission_line[i] = input_spectra[i]
-                    emission_line_λ[i] = input_spectra_λ[i]
+                win_median = median(window_flux)
+                win_mad    = median(abs.(window_flux .- win_median))
+                win_noise  = 1.4826 * win_mad
+
+                if win_noise > 0 && input_spectra[i] > win_median + σ * win_noise
+                    flagged[i] = true
                 end
             end
 
-            line_index = findall(isnan.(emission_line))
+            keep_index = findall(.!flagged)
+            sum(flagged) == 0 && break
 
-            if isempty(line_index)
-                break
-            end
-
-            input_spectra = input_spectra[line_index]
-            input_spectra_σ = input_spectra_σ[line_index]
-            input_spectra_λ = input_spectra_λ[line_index]
+            input_spectra   = input_spectra[keep_index]
+            input_spectra_σ = input_spectra_σ[keep_index]
+            input_spectra_λ = input_spectra_λ[keep_index]
         end
 
-        #Find the missing wavelengths between the original_spectra_λ and input_spectra_λ
-        missing_λ = setdiff(original_spectra_λ, input_spectra_λ)
+        missing_λ       = setdiff(original_spectra_λ, input_spectra_λ)
         missing_indices = findall(x -> x in missing_λ, original_spectra_λ)
 
-        input_spectra = original_spectra
-        input_spectra_σ = original_spectra_σ
-        input_spectra_λ = original_spectra_λ
+        output_spectra   = original_spectra
+        output_spectra_σ = original_spectra_σ
+        output_spectra_λ = original_spectra_λ
 
-        input_spectra[missing_indices] .= NaN
-        input_spectra_σ[missing_indices] .= NaN
-        input_spectra_λ[missing_indices] .= NaN
+        output_spectra[missing_indices]   .= NaN
+        output_spectra_σ[missing_indices] .= NaN
+        output_spectra_λ[missing_indices] .= NaN
 
-        println(input_spectra_λ[missing_indices])
-
-        emission_line_λ_arr = original_spectra_λ[missing_indices]
-        emission_line_arr = original_spectra[missing_indices]
-
-        return emission_line_λ_arr, emission_line_arr,  input_spectra_λ, input_spectra, input_spectra_σ
+        return original_spectra_λ[missing_indices], original_spectra[missing_indices],
+            output_spectra_λ, output_spectra, output_spectra_σ
     end
-
     #------------------- Pre - Process Spectra -------------------
 
     function process_spectra(input_spectra_λ, input_spectra, input_spectra_σ, telluric_λ, remove_telluric)
@@ -659,8 +655,14 @@ module ClassifierFunctions
         end
 
         # Remove any emission lines from the spectrum
-        window_indexes = 8
-        σ_threshold = 2.6
+        wavelength_window = 200 #Measured in Angstroms 
+        #convert to indexes - find out many indices correspond to the above window
+        indexes = findall(x -> x in (input_spectra_λ[1] - wavelength_window):(input_spectra_λ[1] + wavelength_window), input_spectra_λ)
+        window_indexes = length(indexes)
+        print(window_indexes)
+
+        #Sigma clipping threshold for identifying emission lines
+        σ_threshold = 3.2
         emission_line_λ, emission_line_flux,  output_spectra_λ, output_spectra, output_spectra_σ = remove_emission_lines(
             input_spectra_λ, 
             input_spectra, 
@@ -773,10 +775,7 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
     hg_template_λ, altered_spectra, target_λ, altered_spectra_σ, SN_ID, target_redshift, telluric_λ, 
     batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50)
 
-    # Save the original target spectra
-    original_altered_spectra = deepcopy(altered_spectra)
-    original_altered_spectra_σ = deepcopy(altered_spectra_σ)
-    original_wavelength = deepcopy(target_λ)
+
 
     # ---- Begin fit_spectrum logic ----
     num_sn = length(pure_sn_spectra_files)
@@ -789,8 +788,8 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
     chi_squared_arr = collect(1:1:number_of_fits) .* 10.0^10
     chi_squared_red_arr = collect(1:1:number_of_fits) .* 10.0^10
 
-    norm_arr = zeros(Float16, number_of_fits, 2)
-    redshift_vals = zeros(Float16, number_of_fits)
+    norm_arr = zeros(Float32, number_of_fits, 2)
+    redshift_vals = zeros(Float32, number_of_fits)
     indexes = zeros(Int, number_of_fits, 2)
     emission_lines = Vector{Array}(undef, number_of_fits)
     emission_lines_λ = Vector{Array}(undef, number_of_fits)
@@ -805,13 +804,18 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
     spectra_fit_region = Vector{Array}(undef, number_of_fits)
     spectra_σ_fit_region = Vector{Array}(undef, number_of_fits)
     spectra_λ_fit_region = Vector{Array}(undef, number_of_fits)
-    contam_array = Vector{Float16}(undef, number_of_fits)
+    contam_array = Vector{Float32}(undef, number_of_fits)
 
     spectra_to_fit = deepcopy(altered_spectra)
     spectra_to_fit_σ = deepcopy(altered_spectra_σ)
     spectra_λ = deepcopy(target_λ)
     original_λ = deepcopy(target_λ)
 
+    println("Pre-Processing λ")
+    println(spectra_λ[1], " ",spectra_λ[end])
+    println(length(spectra_λ))
+
+    #Removes any emission lines from the spectrum and teluric features 
     processed_spectra_λ, processed_spectra, processed_spectra_σ, telluric_λ, emission_line_λ, emission_line = process_spectra(
         spectra_λ,
         spectra_to_fit,
@@ -819,6 +823,20 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
         telluric_λ,
         remove_telluric
     )
+
+    #Create a temp plot in diagnostics
+    plot(spectra_λ, spectra_to_fit, label = "Original Spectra", color = :red, linewidth = 1.5, dpi=300, ylims = (0,15), grid = false)
+    plot!(processed_spectra_λ, processed_spectra, label = "Processed Spectra", color = :black, linewidth = 1.5)
+    savefig("Development/diagnostic_plots/emission_line_removal.png")
+
+    original_specta_to_fit_λ = deepcopy(spectra_λ)
+    original_spectra_to_fit = deepcopy(spectra_to_fit)
+    original_spectra_to_fit_σ = deepcopy(spectra_to_fit_σ)
+
+
+    println("Post-Processed λ")
+    println(processed_spectra_λ[1], " ", processed_spectra_λ[end])
+    println(length(processed_spectra_λ))
 
     redshift_max = 0.8
     if ismissing(target_redshift) || target_redshift == "None"
@@ -839,6 +857,8 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
             round(z, digits=2) != round(target_redshift, digits=2) && continue
         end
 
+        
+
         spectra_to_fit, spectra_to_fit_σ, spectra_to_fit_λ, pure_sn_spectra, pure_hg_spectra, sn_λ, hg_λ,
         standard_template_indices, non_standard_template_indices, binned_spectra, binned_spectra_σ, binned_spectra_λ, hg_mask = redshift_spectra(
             spectra_to_fit_λ,
@@ -851,6 +871,16 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
             pure_hg_spectra_files,
             z,
             hg_template_λ, hg_mask, original_λ)
+
+        plot((original_specta_to_fit_λ ./ (1+z)), original_spectra_to_fit, label = "Original Spectra", color = :grey, linewidth = 0.8, dpi=300, ylims = (0,15), grid = false)
+        plot!(spectra_to_fit_λ, spectra_to_fit, label = "Redshifted + Binned + Lines Removed", color = :black, linewidth = 1.5)
+        plot!(binned_spectra_λ, binned_spectra, label = "Nans Removed", color = :orange, linewidth = 1)
+        savefig("Development/diagnostic_plots/redshifted_spectra.png")
+
+        println("Redshifted λ")
+        println(spectra_to_fit_λ[1], " ", spectra_to_fit_λ[end])
+        println(length(spectra_to_fit_λ))
+        println("END")
 
         
 
@@ -883,6 +913,9 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
             if sn_i_idx in galactic_sn && z != 0.0
                 continue
             end
+            type = pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[sn_i_idx]]
+
+            #Trim the main spectra if there are any non standard templates
 
             if sn_i_idx in non_standard_template_indices
                 sn_i_λ_full = sn_λ[sn_i_idx]
@@ -944,8 +977,6 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
                     hg_i_λ   = hg_λ[hg_i_idx]
                 end
 
-
-
                 spec_v   = view(spectra_to_fit,   valid_idx)
                 spec_σ_v = view(spectra_to_fit_σ, valid_idx)
                 λ_region = view(hg_i_λ,           valid_idx)
@@ -964,12 +995,13 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
                 end
                 chi_squared_red = chi_squared / length(spec_v)
 
-                type = pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[sn_i_idx]]
+                
                 index = findall(x -> x == type, unique_types)[1]
 
                 if chi_squared_red < chi_squared_red_arr[index]
                     chi_squared_arr[index] = chi_squared
                     chi_squared_red_arr[index] = chi_squared_red
+                    #Store the A and B normalisation parameters
                     norm_arr[index, 1] = norm_sn
                     norm_arr[index, 2] = norm_hg
                     indexes[index, 1] = sn_i_idx
@@ -979,6 +1011,7 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
                     contamination = ((sum(hg_i .* norm_hg)) / (sum((sn_i .* norm_sn) .+ (hg_i .* norm_hg)))) * 100
                     contam_array[index] = contamination
 
+                    #Any masked out emission lines
                     emission_lines[index] = emission_line
                     emission_lines_λ[index] = emission_line_λ
 
@@ -990,7 +1023,7 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
                     best_fit_λ_arr[index]     = collect(λ_region)
                     spectra_fit_region[index] = collect(spec_v)
                     spectra_σ_fit_region[index] = collect(spec_σ_v)
-                    spectra_λ_fit_region[index] = collect(λ_region)
+                    spectra_λ_fit_region[index] = collect((λ_region))
                     sn_component_arr[index]   = collect(sn_v .* norm_sn)
                     hg_component_arr[index]   = collect(hg_v .* norm_hg)
 
@@ -999,6 +1032,7 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
             end
         end
     end
+
     # ---- End fit_spectrum logic ----
     fits = findall(x -> x != 0, indexes[:, 1])
 
@@ -1012,7 +1046,7 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
     # Find where that sits within the `fits` subset for the type arrays.
     best_chi_full  = argmin(chi_squared_red_arr)
     best_chi       = findfirst(==(best_chi_full), fits)  # index into top_fits_* arrays
-    best_redshift  = redshift_vals[best_chi_full]
+    best_redshift  = redshift_vals[best_chi]
 
     if isempty(top_fits_sn_type) || isnothing(best_chi)
         best_type = "Unknown"
@@ -1026,16 +1060,13 @@ function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names
 
     savepath = "/Users/edcharleton/PhD/SIREN/classifications_dir/plots"
 
-    println(original_wavelength[1], " - ", original_wavelength[end])
-    println(spectra_fit_region)
-
     plotpath = show_plot ? plot_best_fit(
-        SN_ID,
-        indexes, pure_sn_spectra_info, pure_sn_spectra_file_names,
-        pure_hg_spectra_info, pure_hg_spectra_file_names,
-        processed_spectra, processed_spectra_σ, processed_spectra_λ,
+        SN_ID, best_redshift,
+        indexes, pure_sn_spectra_info, pure_sn_spectra_file_names, #template info
+        pure_hg_spectra_info, pure_hg_spectra_file_names, #Template info
+        original_spectra_to_fit, original_spectra_to_fit_σ, original_specta_to_fit_λ, #Original spectra with emission lines and telurics
         best_fit_arr, best_fit_λ_arr, sn_component_arr, hg_component_arr,
-        binned_spectra_arr, binned_spectra_σ_arr, binned_λ_arr,
+        spectra_fit_region, spectra_σ_fit_region, spectra_λ_fit_region, #Region of the spectra that was actually fit
         chi_squared_red_arr, redshift_vals,
         emission_lines, emission_lines_λ,
         savepath

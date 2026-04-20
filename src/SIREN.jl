@@ -26,8 +26,6 @@ function julia_main()::Cint
     end
     return 0
 end
-
-#Note to Ted, the gaps in the spectrum are where emission lines have been cut out and never added back in. This needs a fix
 #Also see about doing host extinction in a different way, multiplying different combinations of the host and sn combination
     
 function SIREN_main()
@@ -127,6 +125,10 @@ function SIREN_main()
                 continue
             end
         end 
+
+        #print all the unique types in the template metadata to the console
+        unique_types = unique(values(sn_template_metadata["Type"]))
+        println(unique_types)
 
         if batch_mode == false
             println("Classifying ", target_name, "...")

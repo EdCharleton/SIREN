@@ -58,10 +58,10 @@ def generate_model(model_type, wl, redshift = 0.0):
     #print(model.mintime())
 
     if redshift > max_z:
-        print("Redshift is greater than the maximum redshift allowed by the model. Redshift has been set to the maximum redshift allowed by the model.")
+        #print("Redshift is greater than the maximum redshift allowed by the model. Redshift has been set to the maximum redshift allowed by the model.")
         redshift = max_z
     elif redshift < min_z:
-        print("Redshift is less than the minimum redshift allowed by the model. Redshift has been set to the minimum redshift allowed by the model.")
+        #print("Redshift is less than the minimum redshift allowed by the model. Redshift has been set to the minimum redshift allowed by the model.")
         redshift = min_z
 
     #Set the parameters for the model
@@ -247,7 +247,7 @@ template_wl = np.arange(2315, 9015, 15) #Make this longer
 spectra_resolution = len(template_wl)
 
 generate_supernova = True
-generate_hosts = True
+generate_hosts = False
 generate_transients = True
 
 pure_sn_dir = 'transient_template_dir'
@@ -276,7 +276,6 @@ number_of_host_galaxies = len(host_galaxy_names)
 
 #Define the dust parameters
 extinction_range = np.arange(-.6, .6, 0.2) # Redenning equivalent to ~ -0.2 E(B-V) to 0.2 E(B-V)
-print(extinction_range)
 r_v = 3.1
 dust_law = "ccm89" #Use the CCM89 dust law (Cardelli, Clayton, Mathis 1989)
 
@@ -293,7 +292,7 @@ if generate_hosts == True:
 
 
             #resample the spectrum to match the wavelength of the sn templates
-            pure_hg_spectra = spectres.spectres(template_wl, host_galaxy_wl, host_galaxy_flux, verbose = True)
+            pure_hg_spectra = spectres.spectres(template_wl, host_galaxy_wl, host_galaxy_flux, verbose = False)
             
             # Convert the variables to 'double' data type
             template_wl = template_wl.astype('double')
@@ -335,7 +334,6 @@ np.savetxt(os.path.join(pure_hg_dir, 'metadata', 'pure_hg_spectra_names.txt'), p
 
 #Export the dataframes to a json file
 pure_hg_spectra_df.to_json(os.path.join(pure_hg_dir, 'metadata', 'pure_hg_spectra_data.json'))
-exit()
 #--------------------------------------------------------Generate the supernova spectra------------------------------------------------------------
 
 print('---------------------------')
@@ -355,6 +353,7 @@ if generate_supernova == True:
     #list of SNCosmo models
     model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr", "nugent-sn91t", "nugent-sn91bg", "nugent-sn1a", "hsiao", "s11-2006jl", "v19-2006t", "v19-2012ap-corr"])
     sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "91t-like", "91bg-like", "Ia", "Ia", "IIP", "IIb", "Ic-BL"])
+    print(sn_types)
     galactic_source = np.array(['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', "N", "N", "N"])
 
     salt3_tau = generate_phases(-18, 50, 1) #Ia
@@ -472,9 +471,10 @@ if generate_supernova == True:
 
 #--------------------------------------------------------Generate the SIREN version of NGSF templates------------------------------------------------------------
 
-sn_types = os.listdir('sne_superfit')
+sn_types = os.listdir('all_templates/sne_superfit')
 if ".DS_Store" in sn_types:
     sn_types.remove(".DS_Store")
+print(sn_types)
 
 for sn_type in tqdm(sn_types):
     #Check to see if the type directory already exists
@@ -484,7 +484,7 @@ for sn_type in tqdm(sn_types):
         os.makedirs(os.path.join(pure_sn_dir, sn_type), exist_ok=True)
     
     #Get the names of the files in the directory
-    sn_type_transient = os.listdir(os.path.join('sne_superfit', sn_type))
+    sn_type_transient = os.listdir(os.path.join('all_templates/sne_superfit', sn_type))
     if ".DS_Store" in sn_type_transient:
         sn_type_transient.remove(".DS_Store")
     
@@ -493,7 +493,7 @@ for sn_type in tqdm(sn_types):
             sn_type_transient.remove(".DS_Store")
 
         #Get the names of the files in the directory
-        sn_type_transient_files = os.listdir(os.path.join('sne_superfit', sn_type, sn_type_transients))
+        sn_type_transient_files = os.listdir(os.path.join('all_templates/sne_superfit', sn_type, sn_type_transients))
         if ".DS_Store" in sn_type_transient_files:
             sn_type_transient_files.remove(".DS_Store")
         
@@ -505,13 +505,13 @@ for sn_type in tqdm(sn_types):
             for a_v in extinction_range:
                 sn_template_wl = deepcopy(template_wl)
                 #Load the file
-                sn_type_transient_data = np.loadtxt(os.path.join('sne_superfit', sn_type, sn_type_transients, sn_type_transient_file))
+                sn_type_transient_data = np.loadtxt(os.path.join('all_templates/sne_superfit', sn_type, sn_type_transients, sn_type_transient_file))
 
                 sn_wl = sn_type_transient_data[:, 0]
                 sn_flux = sn_type_transient_data[:, 1]
 
                 #Trim the spectra to the relevant wavelength range
-                trimmed_sn_spectra = spectres.spectres(sn_template_wl, sn_wl, sn_flux, verbose = True)
+                trimmed_sn_spectra = spectres.spectres(sn_template_wl, sn_wl, sn_flux, verbose = False)
 
                 nans = np.isnan(trimmed_sn_spectra)
                 #get the indices where nans are false, where the spectra is within the allowed range
@@ -562,9 +562,10 @@ for sn_type in tqdm(sn_types):
                 number_of_templates = number_of_templates + 1
 
 #------------------------------------------------------Generate the SIREN version of the Supersnid spectra----------------------------------------------------------
-sn_types = os.listdir('sne_supersnid')
+sn_types = os.listdir('all_templates/sne_supersnid')
 #Import the supersnid metadata
-supersnid_metadata = pd.read_csv('sne_supersnid/supersnid_metadata.csv')
+supersnid_metadata = pd.read_csv('all_templates/sne_supersnid/supersnid_metadata.csv')
+print(sn_types)
 
 if ".DS_Store" in sn_types:
     sn_types.remove(".DS_Store")
@@ -582,7 +583,7 @@ for sn_type in tqdm(sn_types):
 
 
     #Get the names of the files in the directory
-    sn_type_transient_files = os.listdir(os.path.join('sne_supersnid', sn_type))
+    sn_type_transient_files = os.listdir(os.path.join('all_templates/sne_supersnid', sn_type))
     if ".DS_Store" in sn_type_transient_files:
         sn_type_transient_files.remove(".DS_Store")
     if "supersnid_metadata.csv" in sn_type_transient_files:
@@ -596,7 +597,7 @@ for sn_type in tqdm(sn_types):
         for a_v in extinction_range:
             sn_template_wl = deepcopy(template_wl)
             #Load the file
-            sn_type_transient_data = np.loadtxt(os.path.join('sne_supersnid', sn_type, sn_type_transient_file))
+            sn_type_transient_data = np.loadtxt(os.path.join('all_templates/sne_supersnid', sn_type, sn_type_transient_file))
 
             sn_wl = sn_type_transient_data[:, 0]
             sn_flux = sn_type_transient_data[:, 1]
@@ -613,7 +614,9 @@ for sn_type in tqdm(sn_types):
 
 
             #Trim the spectra to the relevant wavelength range
-            trimmed_sn_spectra = spectres.spectres(sn_template_wl, sn_wl, sn_flux, verbose = True)
+            print("Bog")
+            trimmed_sn_spectra = spectres.spectres(sn_template_wl, sn_wl, sn_flux, verbose = False)
+            print("off")
 
             nans = np.isnan(trimmed_sn_spectra)
             #get the indices where nans are false, where the spectra is within the allowed range
@@ -768,42 +771,4 @@ SIREN_template_dir = 'SIREN_template_dir'
 os.makedirs(SIREN_template_dir, exist_ok=True)
 
 #Create a directory for the metadata
-os.makedirs(os.path.join(SIREN_template_dir, 'metadata'), exist_ok=True)
 
-combined_template_dict = {}
-
-for sn in pure_sn_spectra_df.itertuples():
-    sn_file_path = os.path.join(sn.path, sn.Index)
-    sn_data = np.loadtxt(sn_file_path, delimiter=',')
-    sn_wl = sn_data[:, 0]
-    sn_flux = sn_data[:, 1]
-
-    for hg in pure_hg_spectra_df.itertuples():
-        hg_file_path = os.path.join(hg.path, hg.Index)
-        hg_data = np.loadtxt(hg_file_path, delimiter=',')
-        hg_wl = hg_data[:, 0]
-        hg_flux = hg_data[:, 1]
-
-
-
-
-        combined_template_file_name = f"{sn.Index.split('.')[0]}.{hg.Index.split('.')[0]}.txt"
-        np.savetxt(os.path.join(SIREN_template_dir, combined_template_file_name), combined_output, delimiter=',', fmt='%s')
-
-        combined_spectrum_info = {
-            'SN Model Type': sn._1,
-            'SN Type': sn.Type,
-            'SN Redshift': sn.redshift,
-            'SN Tau': sn.tau,
-            'SN t0': sn.t0,
-            'SN A_v': sn._6,
-            'HG Type': hg._2,
-            'HG Redshift': hg.redshift,
-            'HG A_v': hg._3,
-            'Combined Path': str(os.path.join(SIREN_template_dir))
-        }
-
-        combined_template_dict[combined_template_file_name] = combined_spectrum_info
-
-combined_template_df = pd.DataFrame.from_dict(combined_template_dict, orient='index')
-combined_template_df.to_json(os.path.join(SIREN_template_dir, 'metadata', 'combined_template_data.json'))
