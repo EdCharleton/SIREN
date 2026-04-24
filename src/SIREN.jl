@@ -42,7 +42,7 @@ function SIREN_main()
         minimum_overlap = parsed_args["minimum_overlap"]
     else
         # Running in REPL mode, add your inputs to the below:
-        file_path = "/Users/edcharleton/PhD/SIREN/spectra_to_classify/TiDES Spectra/TiDES-SN26aip.ascii"
+        file_path = "/Users/edcharleton/PhD/SIREN/spectra_to_classify/TiDES Spectra/TiDES-SN26akd.ascii"
         target_redshift = 0.08
         target_remove_telluric = "N"
         minimum_overlap = 75
@@ -65,6 +65,7 @@ function SIREN_main()
     hg_template_file_names = open(joinpath("host_template_dir", "metadata","pure_hg_spectra_names.txt")) do file
         readlines(file)
     end
+
 
     #----------------------------------------- READ IN TARGET AND TEMPLATE SPECTRA -----------------------------------------
 
@@ -136,7 +137,7 @@ function SIREN_main()
 
 
         best_params, chi_red, path, z, type = chi_squared_classifier(
-            sn_template_metadata, sn_template_file_names, sn_template_spectra, hg_template_metadata, hg_template_file_names, hg_template_spectra, hg_template_mask,
+            sn_template_metadata, sn_template_file_names, sn_template_spectra, hg_template_metadata, hg_template_file_names, hg_template_spectra,
             sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift, 
             telluric_mask, batch_mode, show_plots, target_remove_telluric, minimum_overlap)
 

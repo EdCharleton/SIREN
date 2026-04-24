@@ -121,140 +121,154 @@ module ClassifierFunctions
     end
 
     function plot_best_fit(SN_ID, z,
-    indexes, pure_sn_spectra_info, pure_sn_spectra_file_names,
-    pure_hg_spectra_info, pure_hg_spectra_file_names,
-    original_spectrum, original_spectrum_σ, original_spectrum_λ,
-    best_fit_arr, best_fit_λ_arr, sn_component_arr, hg_component_arr,
-    binned_spectra_arr, binned_spectra_error, binned_λ_arr,
+    best_indices, transient_template_info, transient_template_names,
+    host_template_info, host_template_names,
+    original_flux, original_flux_σ, original_λ,
+    best_fit_arr, best_fit_λ_arr, transient_component_arr, host_component_arr,
+    fitted_spectra_arr, fitted_spectra_σ_arr, fitted_spectra_λ_arr,
     chi_squared_red_arr, redshift_vals,
-    emission_lines, emission_lines_λ,
+    emission_lines_arr, emission_lines_λ_arr,
     savepath = nothing)
 
-        best = argmin(chi_squared_red_arr)
+    best = argmin(chi_squared_red_arr)
 
-        if indexes[best, 1] == 0
-            println("--------------------")
-            printstyled("ERROR: ", color=:red)
-            println("plot_best_fit: No valid fit found for $SN_ID")
-            println("--------------------")
-            return nothing
-        end
-
-        sn_idx = indexes[best, 1]
-        hg_idx = indexes[best, 2]
-
-        sn_type = pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[sn_idx]]
-        hg_type = pure_hg_spectra_info["HG Type"][pure_hg_spectra_file_names[hg_idx]]
-        phase   = get(pure_sn_spectra_info["tau"], pure_sn_spectra_file_names[sn_idx], "N/A")
-        chi_red = round(chi_squared_red_arr[best], digits = 3)
-        z       = round(Float64(redshift_vals[best]), digits = 3)
-
-        obs_flux    = collect(Float64, original_spectrum)
-        obs_err     = collect(Float64, original_spectrum_σ)
-        obs_λ       = collect(Float64, original_spectrum_λ)
-        best_fit    = collect(Float64, best_fit_arr[best])
-        fit_λ       = collect(Float64, best_fit_λ_arr[best])   # own λ axis
-        sn_comp     = collect(Float64, sn_component_arr[best])
-        hg_comp     = collect(Float64, hg_component_arr[best])
-        binned_flux = collect(Float64, binned_spectra_arr[best])
-        binned_λ    = collect(Float64, binned_λ_arr[best])
-        em_lines    = emission_lines[best]
-        em_lines_λ  = emission_lines_λ[best]
-
-        display_name = splitext(splitpath(SN_ID)[end])[1]
-
-        # ── Sensible y-axis limits ignoring outlier spikes ────────────────────────
-        finite_flux = filter(isfinite, obs_flux)
-        y_lo = quantile(finite_flux, 0.01)
-        y_hi = quantile(finite_flux, 0.99) * 1.3
-
-        p = plot(
-            layout = (1, 1),
-            size = (1600, 900),
-            dpi = 300,
-            grid = false,
-            guidefontsize = 22,
-            tickfontsize = 16,
-            titlefont = 22,
-            legendfontsize = 16,
-            left_margin = 9Plots.mm,
-            bottom_margin = 10Plots.mm,
-            top_margin = 10Plots.mm,
-            right_margin = 4Plots.mm
-        )
-
-        # Observed spectrum — clipped ribbon so spikes don't dominate
-        plot!(p[1],
-            obs_λ, obs_flux,
-            ribbon = min.(obs_err, (y_hi - y_lo) * 0.1),   # cap ribbon height
-            fillalpha = 0.2,
-            fillcolor = :grey,
-            linecolor = "#8E8E8E",
-            linewidth = 1.2,
-            label = "Observed ($display_name)",
-            xlabel = "Wavelength (Å)",
-            ylabel = "Flux (arb. units)",
-            legend = :topright,
-            ylims = (y_lo, y_hi)
-        )
-
-        # Binned spectrum
-        plot!(p[1],
-            binned_λ .* (1+z), binned_flux,
-            linewidth = 1,
-            linecolor = :black,
-            label = "Binned + Processed"
-        )
-
-        # Best fit — uses its own λ axis so it covers exactly where it was computed
-        plot!(p[1],
-            fit_λ .* (1+z), best_fit,
-            linecolor = :red,
-            linewidth = 1.5,
-            label = "Best Fit ($sn_type + $hg_type)"
-        )
-
-        plot!(p[1],
-            fit_λ .* (1+z), sn_comp,
-            linecolor = :blue,
-            linewidth = 1.0,
-            linestyle = :dash,
-            label = "SN ($sn_type)"
-        )
-
-        plot!(p[1],
-            fit_λ .* (1+z), hg_comp,
-            linecolor = :orange,
-            linewidth = 1.0,
-            linestyle = :dash,
-            label = "Host Galaxy ($hg_type)"
-        )
-
-        if !isempty(em_lines_λ)
-            for (λ_em, name) in zip(em_lines_λ, em_lines)
-                vline!(p[1], [λ_em],
-                    linecolor = :green,
-                    linewidth = 0.8,
-                    linestyle = :dot,
-                    label = ""
-                )
-                annotate!(p[1], λ_em, y_hi * 0.92,
-                    text(string(name), :green, :center, 7))
-            end
-        end
-
-        title!(p[1], "$display_name  |  z = $z  |  Phase = $phase days  |  χ²ᵣ = $chi_red")
-
-        if !isnothing(savepath)
-            outpath = joinpath(savepath, "$(display_name)_best_fit.png")
-            savefig(p, outpath)
-            println("Plot saved to $outpath")
-            return outpath
-        end
-
-        display(p)
-        return p
+    if best_indices[best, 1] == 0
+        println("--------------------")
+        printstyled("ERROR: ", color=:red)
+        println("plot_best_fit: No valid fit found for $SN_ID")
+        println("--------------------")
+        return nothing
     end
+
+    t_idx = best_indices[best, 1]
+    h_idx = best_indices[best, 2]
+
+    transient_type = transient_template_info["Type"][transient_template_names[t_idx]]
+    host_type      = host_template_info["HG Type"][host_template_names[h_idx]]
+    phase          = get(transient_template_info["tau"], transient_template_names[t_idx], "N/A")
+    chi_red        = round(chi_squared_red_arr[best], digits=3)
+    z_best         = round(Float64(redshift_vals[best]), digits=3)
+
+    # ── Data ─────────────────────────────────────────────────────────────────
+    # Original unbinned spectrum (observer frame)
+    obs_λ    = collect(Float64, original_λ)
+    obs_flux = collect(Float64, original_flux)
+    obs_err  = collect(Float64, original_flux_σ)
+
+    # Binned + processed spectrum (rest frame → shift back to observer frame)
+    binned_λ    = collect(Float64, fitted_spectra_λ_arr[best]) .* (1 + z_best)
+    binned_flux = collect(Float64, fitted_spectra_arr[best])
+    binned_err  = collect(Float64, fitted_spectra_σ_arr[best])
+
+    # Best fit and components (rest frame → observer frame)
+    fit_λ          = collect(Float64, best_fit_λ_arr[best])     .* (1 + z_best)
+    best_fit       = collect(Float64, best_fit_arr[best])
+    transient_comp = collect(Float64, transient_component_arr[best])
+    host_comp      = collect(Float64, host_component_arr[best])
+
+    em_lines   = emission_lines_arr[best]
+    em_lines_λ = emission_lines_λ_arr[best]
+
+    display_name = splitext(splitpath(SN_ID)[end])[1]
+
+    # ── Y-axis limits from the unbinned spectrum, ignoring outlier spikes ────
+    finite_flux = filter(isfinite, obs_flux)
+    y_lo = quantile(finite_flux, 0.01)
+    y_hi = quantile(finite_flux, 0.99) * 1.3
+
+    # ── Plot ─────────────────────────────────────────────────────────────────
+    p = plot(
+        size          = (1600, 900),
+        dpi           = 300,
+        grid          = false,
+        guidefontsize = 22,
+        tickfontsize  = 16,
+        titlefont     = 22,
+        legendfontsize = 16,
+        left_margin   = 9Plots.mm,
+        bottom_margin = 10Plots.mm,
+        top_margin    = 10Plots.mm,
+        right_margin  = 4Plots.mm
+    )
+
+    # 1. Original unbinned spectrum + error ribbon — light grey fill, mid-grey line
+    plot!(p,
+        obs_λ, obs_flux,
+        ribbon    = min.(obs_err, (y_hi - y_lo) * 0.1),
+        fillalpha = 0.15,
+        fillcolor = "#C8C8C8",
+        linecolor = "#909090",
+        linewidth = 0.8,
+        label     = "Observed ($display_name)",
+        xlabel    = "Wavelength (Å)",
+        ylabel    = "Flux (arb. units)",
+        legend    = :topright,
+        ylims     = (y_lo, y_hi)
+    )
+
+    # 2. Binned + emission-line-removed spectrum — solid black
+    plot!(p,
+        binned_λ, binned_flux,
+        ribbon    = min.(binned_err, (y_hi - y_lo) * 0.1),
+        fillalpha = 0.10,
+        fillcolor = :black,
+        linecolor = :black,
+        linewidth = 1.4,
+        label     = "Binned + Lines Removed"
+    )
+
+    # 3. Best fit — solid red
+    plot!(p,
+        fit_λ, best_fit,
+        linecolor = :red,
+        linewidth = 1.8,
+        label     = "Best Fit ($transient_type + $host_type)"
+    )
+
+    # 4. Transient component — dashed blue
+    plot!(p,
+        fit_λ, transient_comp,
+        linecolor  = :royalblue,
+        linewidth  = 1.2,
+        linestyle  = :dash,
+        label      = "Transient ($transient_type)"
+    )
+
+    # 5. Host component — dashed orange
+    plot!(p,
+        fit_λ, host_comp,
+        linecolor  = :darkorange,
+        linewidth  = 1.2,
+        linestyle  = :dash,
+        label      = "Host Galaxy ($host_type)"
+    )
+
+    # 6. Emission line markers
+    if !isempty(em_lines_λ)
+        for (λ_em, name) in zip(em_lines_λ, em_lines)
+            vline!(p, [λ_em],
+                linecolor = :green,
+                linewidth = 0.8,
+                linestyle = :dot,
+                label     = ""
+            )
+            annotate!(p, λ_em, y_hi * 0.92,
+                text(string(name), :green, :center, 7))
+        end
+    end
+
+    title!(p, "$display_name  |  z = $z_best  |  Phase = $phase days  |  χ²ᵣ = $chi_red")
+
+    if !isnothing(savepath)
+        outpath = joinpath(savepath, "$(display_name)_best_fit.png")
+        savefig(p, outpath)
+        println("Plot saved to $outpath")
+        return outpath
+    end
+
+    display(p)
+    return p
+end
 
     function calculate_spectral_error(spectra, spectra_λ, window_size::Int)
         #Use Savitsky Golay to smooth the spectrum, then calculate the residuals
@@ -675,7 +689,8 @@ module ClassifierFunctions
     end
     
 
-    function redshift_spectra(input_spectra_λ, input_spectra, input_spectra_σ, input_transient_templates, input_transient_λ, transient_metadata, transient_file_names, input_host_templates, redshift,  input_host_λ, input_host_mask, original_spectra_λ)
+    function redshift_spectra(input_spectra_λ, input_spectra, input_spectra_σ, input_transient_templates, input_transient_λ, 
+        transient_metadata, transient_file_names, input_host_templates, redshift,  input_host_λ, original_spectra_λ)
 
         # Redshift the target spectra to rest wavelength
         de_redshifted_λ = original_spectra_λ ./ (1 + redshift)
@@ -692,6 +707,8 @@ module ClassifierFunctions
         top_λ = 8000 / (1 + redshift)
         top_λ = find_closest_value(full_template_λ_range, top_λ)
         full_template_λ = collect(bottom_λ:15:top_λ)
+
+
     
         # Trim and rebin the spectra to fit to the wavelength range of the templates
         output_spectra, output_spectra_σ = spectral_resampler(
@@ -704,6 +721,8 @@ module ClassifierFunctions
         binned_spectra = deepcopy(output_spectra)
         binned_spectra_σ = deepcopy(output_spectra_σ)
         binned_spectra_λ = deepcopy(full_template_λ)
+
+
 
         output_spectra, output_spectra_σ, output_spectra_λ= trim_nans(
             output_spectra, 
@@ -727,12 +746,21 @@ module ClassifierFunctions
         non_standard_template_indices = findall(x -> x in common_names, transient_file_names)
 
         # Trim the templates to the same wavelength range as the target spectra
-    
-        output_transient_templates = [input_transient_templates[i][template_indicies] for i in standard_template_indices]
+        # Trim standard templates to the common wavelength range.
+        # Non-standard templates are left at their original wavelengths —
+        # the classifier handles their trimming individually per target spectrum.
+        output_transient_templates = Array{Any}(undef, length(input_transient_templates))
+        for i in eachindex(input_transient_templates)
+            if i in standard_template_indices
+                output_transient_templates[i] = input_transient_templates[i][template_indicies]
+            else
+                output_transient_templates[i] = input_transient_templates[i]
+            end
+        end
+        
         output_host_templates = [input_host_templates[i][template_indicies] for i in eachindex(input_host_templates)]
     
         output_host_λ = [input_host_λ[i][template_indicies] for i in eachindex(input_host_λ)]
-        output_host_mask = [input_host_mask[i][template_indicies] for i in eachindex(input_host_mask)]
 
         output_transient_λ = Array{Any}(undef, length(input_transient_λ))
         for λ in eachindex(input_transient_λ)
@@ -745,7 +773,7 @@ module ClassifierFunctions
 
         return output_spectra, output_spectra_σ, output_spectra_λ, output_transient_templates, 
         output_host_templates, output_transient_λ, output_host_λ, standard_template_indices, non_standard_template_indices,
-        binned_spectra, binned_spectra_σ, binned_spectra_λ, output_host_mask
+        binned_spectra, binned_spectra_σ, binned_spectra_λ
         
     end
 
@@ -770,308 +798,280 @@ module ClassifierFunctions
 
 
     #------------------- Chi Squared Classifier -------------------
-function chi_squared_classifier(pure_sn_spectra_info, pure_sn_spectra_file_names, pure_sn_spectra_files, 
-    pure_hg_spectra_info, pure_hg_spectra_file_names, pure_hg_spectra_files, hg_mask, sn_template_λ, 
-    hg_template_λ, altered_spectra, target_λ, altered_spectra_σ, SN_ID, target_redshift, telluric_λ, 
-    batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50)
+function chi_squared_classifier(
+        transient_template_info, transient_template_names, transient_template_files,
+        host_template_info,      host_template_names,      host_template_files,
+        transient_template_λ,   host_template_λ,
+        target_spectra,         target_λ,                  target_spectra_σ,
+        SN_ID, target_redshift, telluric_λ,
+        batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50)
 
+    # ── Counts and unique types ───────────────────────────────────────────────
+    n_transient_templates = length(transient_template_files)
+    n_host_templates      = length(host_template_files)
 
+    unique_types  = unique(values(transient_template_info["Type"]))
+    n_types       = length(unique_types)
+    type_to_index = Dict(t => i for (i, t) in enumerate(unique_types))
 
-    # ---- Begin fit_spectrum logic ----
-    num_sn = length(pure_sn_spectra_files)
-    num_hg = length(pure_hg_spectra_files)
+    # ── Per-type result arrays ────────────────────────────────────────────────
+    chi_squared_arr     = fill(1e10, n_types)
+    chi_squared_red_arr = fill(1e10, n_types)
 
-    number_of_fits = length(unique(values(pure_sn_spectra_info["Type"])))
-    unique_types = unique(values(pure_sn_spectra_info["Type"]))
+    norm_arr      = zeros(Float32, n_types, 2)
+    redshift_vals = zeros(Float32, n_types)
+    best_indices  = zeros(Int,     n_types, 2)
+    contam_array  = Vector{Float32}(undef, n_types)
 
-    #Create an empty array to populate with chi-squared vals for each fit, set to a high number to replace
-    chi_squared_arr = collect(1:1:number_of_fits) .* 10.0^10
-    chi_squared_red_arr = collect(1:1:number_of_fits) .* 10.0^10
+    emission_lines_arr   = Vector{Array}(undef, n_types)
+    emission_lines_λ_arr = Vector{Array}(undef, n_types)
 
-    norm_arr = zeros(Float32, number_of_fits, 2)
-    redshift_vals = zeros(Float32, number_of_fits)
-    indexes = zeros(Int, number_of_fits, 2)
-    emission_lines = Vector{Array}(undef, number_of_fits)
-    emission_lines_λ = Vector{Array}(undef, number_of_fits)
+    binned_spectra_arr   = Vector{Array}(undef, n_types)
+    binned_λ_arr         = Vector{Array}(undef, n_types)
+    binned_spectra_σ_arr = Vector{Array}(undef, n_types)
 
-    binned_spectra_arr = Vector{Array}(undef, number_of_fits)
-    binned_λ_arr = Vector{Array}(undef, number_of_fits)
-    binned_spectra_σ_arr = Vector{Array}(undef, number_of_fits)
-    best_fit_arr = Vector{Array}(undef, number_of_fits)
-    best_fit_λ_arr = Vector{Array}(undef, number_of_fits)
-    sn_component_arr = Vector{Array}(undef, number_of_fits)
-    hg_component_arr = Vector{Array}(undef, number_of_fits)
-    spectra_fit_region = Vector{Array}(undef, number_of_fits)
-    spectra_σ_fit_region = Vector{Array}(undef, number_of_fits)
-    spectra_λ_fit_region = Vector{Array}(undef, number_of_fits)
-    contam_array = Vector{Float32}(undef, number_of_fits)
+    best_fit_arr            = Vector{Array}(undef, n_types)
+    best_fit_λ_arr          = Vector{Array}(undef, n_types)
+    transient_component_arr = Vector{Array}(undef, n_types)
+    host_component_arr      = Vector{Array}(undef, n_types)
+    fitted_spectra_arr      = Vector{Array}(undef, n_types)
+    fitted_spectra_σ_arr    = Vector{Array}(undef, n_types)
+    fitted_spectra_λ_arr    = Vector{Array}(undef, n_types)
 
-    spectra_to_fit = deepcopy(altered_spectra)
-    spectra_to_fit_σ = deepcopy(altered_spectra_σ)
-    spectra_λ = deepcopy(target_λ)
-    original_λ = deepcopy(target_λ)
+    # ── Working copies of the target spectrum ─────────────────────────────────
+    working_flux    = deepcopy(target_spectra)
+    working_flux_σ  = deepcopy(target_spectra_σ)
+    working_λ       = deepcopy(target_λ)
+    original_λ      = deepcopy(target_λ)
 
-    println("Pre-Processing λ")
-    println(spectra_λ[1], " ",spectra_λ[end])
-    println(length(spectra_λ))
-
-    #Removes any emission lines from the spectrum and teluric features 
-    processed_spectra_λ, processed_spectra, processed_spectra_σ, telluric_λ, emission_line_λ, emission_line = process_spectra(
-        spectra_λ,
-        spectra_to_fit,
-        spectra_to_fit_σ,
-        telluric_λ,
-        remove_telluric
+    # ── Clean the target spectrum (emission lines + tellurics) ────────────────
+    cleaned_λ, cleaned_flux, cleaned_flux_σ, telluric_λ, emission_line_λ, emission_line = process_spectra(
+        working_λ, working_flux, working_flux_σ, telluric_λ, remove_telluric
     )
 
-    #Create a temp plot in diagnostics
-    plot(spectra_λ, spectra_to_fit, label = "Original Spectra", color = :red, linewidth = 1.5, dpi=300, ylims = (0,15), grid = false)
-    plot!(processed_spectra_λ, processed_spectra, label = "Processed Spectra", color = :black, linewidth = 1.5)
-    savefig("Development/diagnostic_plots/emission_line_removal.png")
 
-    original_specta_to_fit_λ = deepcopy(spectra_λ)
-    original_spectra_to_fit = deepcopy(spectra_to_fit)
-    original_spectra_to_fit_σ = deepcopy(spectra_to_fit_σ)
+    original_target_λ      = deepcopy(working_λ)
+    original_target_flux   = deepcopy(working_flux)
+    original_target_flux_σ = deepcopy(working_flux_σ)
 
-
-    println("Post-Processed λ")
-    println(processed_spectra_λ[1], " ", processed_spectra_λ[end])
-    println(length(processed_spectra_λ))
-
-    redshift_max = 0.8
-    if ismissing(target_redshift) || target_redshift == "None"
-        redshift_max = 0.6
+    # ── Redshift grid ─────────────────────────────────────────────────────────
+    redshift_max = if ismissing(target_redshift) || target_redshift == "None"
+        0.6
     else
-        redshift_max = target_redshift > 0.6 ? target_redshift : 0.6
+        target_redshift > 0.6 ? target_redshift : 0.6
     end
-
     redshift_range = collect(0.00:0.01:redshift_max)
 
+    # ── Main redshift loop ────────────────────────────────────────────────────
     for z in (batch_mode ? redshift_range : ProgressBar(redshift_range))
-
-        spectra_to_fit = deepcopy(processed_spectra)
-        spectra_to_fit_σ = deepcopy(processed_spectra_σ)
-        spectra_to_fit_λ = deepcopy(processed_spectra_λ)
 
         if !ismissing(target_redshift) && target_redshift != "None"
             round(z, digits=2) != round(target_redshift, digits=2) && continue
         end
 
-        
+        redshifted_flux   = deepcopy(cleaned_flux)
+        redshifted_flux_σ = deepcopy(cleaned_flux_σ)
+        redshifted_λ      = deepcopy(cleaned_λ)
 
-        spectra_to_fit, spectra_to_fit_σ, spectra_to_fit_λ, pure_sn_spectra, pure_hg_spectra, sn_λ, hg_λ,
-        standard_template_indices, non_standard_template_indices, binned_spectra, binned_spectra_σ, binned_spectra_λ, hg_mask = redshift_spectra(
-            spectra_to_fit_λ,
-            spectra_to_fit,
-            spectra_to_fit_σ,
-            pure_sn_spectra_files,
-            sn_template_λ,
-            pure_sn_spectra_info,
-            pure_sn_spectra_file_names,
-            pure_hg_spectra_files,
+
+        redshifted_flux, redshifted_flux_σ, redshifted_λ,
+        transient_templates, host_templates,
+        transient_template_λ_z, host_template_λ_z,
+        standard_template_indices, non_standard_template_indices,
+        binned_flux, binned_flux_σ, binned_λ = redshift_spectra(
+            redshifted_λ,
+            redshifted_flux,
+            redshifted_flux_σ,
+            transient_template_files,
+            transient_template_λ,
+            transient_template_info,
+            transient_template_names,
+            host_template_files,
             z,
-            hg_template_λ, hg_mask, original_λ)
-
-        plot((original_specta_to_fit_λ ./ (1+z)), original_spectra_to_fit, label = "Original Spectra", color = :grey, linewidth = 0.8, dpi=300, ylims = (0,15), grid = false)
-        plot!(spectra_to_fit_λ, spectra_to_fit, label = "Redshifted + Binned + Lines Removed", color = :black, linewidth = 1.5)
-        plot!(binned_spectra_λ, binned_spectra, label = "Nans Removed", color = :orange, linewidth = 1)
-        savefig("Development/diagnostic_plots/redshifted_spectra.png")
-
-        println("Redshifted λ")
-        println(spectra_to_fit_λ[1], " ", spectra_to_fit_λ[end])
-        println(length(spectra_to_fit_λ))
-        println("END")
-
-        
-
-        deep_copy_spectra = deepcopy(spectra_to_fit)
-        deep_copy_spectra_σ = deepcopy(spectra_to_fit_σ)
-        deep_copy_λ = deepcopy(spectra_to_fit_λ)
-
-        # ── Precompute outside both loops ────────────────────────────────────────────
-
-        # Avoid dict lookup + findall on every iteration
-        type_to_index = Dict(t => i for (i, t) in enumerate(unique_types))
-
-        # Convert template wavelength to a Set once for O(1) lookup
-        full_template_λ_set = Set(deep_copy_λ)
-
-        # Precompute valid_indices per hg template — these don't depend on sn_i at all
-        hg_valid_indices = [findall(==(1), hg_mask[hg_i_idx]) for hg_i_idx in 1:num_hg]
-
-        # Precompute which sn templates are galactic sources to avoid dict lookup in loop
-        galactic_sn = Set(
-            sn_i_idx for sn_i_idx in 1:num_sn
-            if pure_sn_spectra_info["Galactic Source"][pure_sn_spectra_file_names[sn_i_idx]] == "Y"
+            host_template_λ,
+            original_λ
         )
 
+        # Frozen copies for the inner template loops
+        frozen_flux   = deepcopy(redshifted_flux)
+        frozen_flux_σ = deepcopy(redshifted_flux_σ)
+        frozen_λ      = deepcopy(redshifted_λ)
+        frozen_λ_set  = Set(frozen_λ)
 
-        # ── Inner loop replacement ────────────────────────────────────────────────────
+        # Transient templates flagged as galactic sources are only used at z = 0
+        galactic_transients = Set(
+            t_idx for t_idx in 1:n_transient_templates
+            if transient_template_info["Galactic Source"][transient_template_names[t_idx]] == "Y"
+        )
 
-        for sn_i_idx in ProgressBar(1:num_sn)
+        # ── Transient template loop ───────────────────────────────────────────
+        for t_idx in ProgressBar(1:length(transient_templates))
 
-            if sn_i_idx in galactic_sn && z != 0.0
-                continue
-            end
-            type = pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[sn_i_idx]]
+            t_idx in galactic_transients && z != 0.0 && continue
 
-            #Trim the main spectra if there are any non standard templates
+            type  = transient_template_info["Type"][transient_template_names[t_idx]]
+            index = type_to_index[type]
 
-            if sn_i_idx in non_standard_template_indices
-                sn_i_λ_full = sn_λ[sn_i_idx]
+            is_non_standard = t_idx in non_standard_template_indices
 
-                # Set-based intersection: O(n) instead of O(n²)
-                sn_i_λ_set = Set(sn_i_λ_full)
-                common_set = intersect(sn_i_λ_set, full_template_λ_set)
+            if is_non_standard
+                transient_λ_full = transient_template_λ_z[t_idx]
+                transient_λ_set  = Set(transient_λ_full)
+                common_set       = intersect(transient_λ_set, frozen_λ_set)
 
-                if (length(common_set)/length(deep_copy_spectra)) < (minimum_overlap/100)
+                if (length(common_set) / length(frozen_flux)) < (minimum_overlap / 100)
                     continue
                 end
 
-                common_indices_sn       = findall(in(common_set), sn_i_λ_full)
-                common_indices_template = findall(in(common_set), deep_copy_λ)
-
-                sn_i = pure_sn_spectra_files[sn_i_idx][common_indices_sn]
-                sn_i_λ  = sn_i_λ_full[common_indices_sn]
-
-                spectra_to_fit  = deep_copy_spectra[common_indices_template]
-                spectra_to_fit_σ = deep_copy_spectra_σ[common_indices_template]
-
-                # Precompute sn_i_λ as Set once for hg intersection below
-                sn_i_λ_set_trimmed = Set(sn_i_λ)
+                common_idx_transient    = findall(in(common_set), transient_λ_full)
+                common_idx_target       = findall(in(common_set), frozen_λ)
+                transient_flux_t        = transient_templates[t_idx][common_idx_transient]
+                transient_λ_t           = transient_λ_full[common_idx_transient]
+                target_flux_t           = frozen_flux[common_idx_target]
+                target_flux_σ_t         = frozen_flux_σ[common_idx_target]
+                transient_λ_set_trimmed = Set(transient_λ_t)
             else
-                sn_i            = pure_sn_spectra[sn_i_idx]
-                sn_i_λ          = sn_λ[sn_i_idx]
-                spectra_to_fit   = deep_copy_spectra
-                spectra_to_fit_σ = deep_copy_spectra_σ
-                sn_i_λ_set_trimmed = nothing
+                transient_flux_t        = transient_templates[t_idx]
+                transient_λ_t           = transient_template_λ_z[t_idx]
+                target_flux_t           = frozen_flux
+                target_flux_σ_t         = frozen_flux_σ
+                transient_λ_set_trimmed = nothing
             end
 
-            # Precompute type index once per sn template
-            type  = pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[sn_i_idx]]
-            index = type_to_index[type]
-
-            is_non_standard = sn_i_idx in non_standard_template_indices
-
-            for hg_i_idx in 1:num_hg
-                valid_idx = hg_valid_indices[hg_i_idx]
+            # ── Host template loop ────────────────────────────────────────────
+            for h_idx in 1:length(host_templates)
 
                 if is_non_standard
-                    hg_i_λ_full = hg_λ[hg_i_idx]
+                    host_λ_full     = host_template_λ_z[h_idx]
+                    common_idx_host = findall(in(transient_λ_set_trimmed), host_λ_full)
 
-                    # O(n) Set intersection instead of O(n²)
-                    common_indices_hg = findall(in(sn_i_λ_set_trimmed), hg_i_λ_full)
-
-                    if (length(common_indices_hg)/length(deep_copy_spectra)) < (minimum_overlap/100)
+                    if (length(common_idx_host) / length(frozen_flux)) < (minimum_overlap / 100)
                         continue
                     end
 
-                    hg_i     = pure_hg_spectra[hg_i_idx][common_indices_hg]
-                    hg_i_λ   = hg_i_λ_full[common_indices_hg]
-                    hg_i_mask = hg_mask[hg_i_idx][common_indices_hg]
-
-                    # Recompute valid_indices for this trimmed mask
-                    valid_idx = findall(==(1), hg_i_mask)
+                    host_flux_h = host_templates[h_idx][common_idx_host]
+                    host_λ_h    = host_λ_full[common_idx_host]
                 else
-                    hg_i     = pure_hg_spectra[hg_i_idx]
-                    hg_i_λ   = hg_λ[hg_i_idx]
+                    host_flux_h = host_templates[h_idx]
+                    host_λ_h    = host_template_λ_z[h_idx]
                 end
 
-                spec_v   = view(spectra_to_fit,   valid_idx)
-                spec_σ_v = view(spectra_to_fit_σ, valid_idx)
-                λ_region = view(hg_i_λ,           valid_idx)
-                sn_v     = view(sn_i,             valid_idx)
-                hg_v     = view(hg_i,             valid_idx)
+                # ── NaN removal on local copies so outer arrays are never mutated ──
+                # target_flux_t / target_flux_σ_t must stay intact for the next h_idx
+                valid = .!isnan.(target_flux_t)  .& .!isnan.(target_flux_σ_t) .&
+                        .!isnan.(transient_flux_t) .& .!isnan.(host_flux_h)
 
+                sum(valid) == 0 && continue
 
-                norm_sn = calculate_B(spec_v, sn_v, hg_v, spec_σ_v)
-                norm_hg = calculate_C(spec_v, sn_v, hg_v, spec_σ_v)
+                target_v    = target_flux_t[valid]
+                target_σ_v  = target_flux_σ_t[valid]
+                transient_v = transient_flux_t[valid]
+                host_v      = host_flux_h[valid]
+                host_λ_v    = host_λ_h[valid]
 
-                template_best_fit = (sn_v .* norm_sn) .+ (hg_v .* norm_hg)
+                norm_transient = calculate_B(target_v, transient_v, host_v, target_σ_v)
+                norm_host      = calculate_C(target_v, transient_v, host_v, target_σ_v)
 
-                chi_squared     = sum((spec_v .- template_best_fit).^2 ./ spec_σ_v.^2)
-                if norm_sn < 0 || norm_hg < 0
-                    continue
-                end
-                chi_squared_red = chi_squared / length(spec_v)
+                norm_transient < 0 || norm_host < 0 && continue
 
-                
-                index = findall(x -> x == type, unique_types)[1]
+                best_fit   = (transient_v .* norm_transient) .+ (host_v .* norm_host)
+                chi_sq     = sum((target_v .- best_fit).^2 ./ target_σ_v.^2)
+                chi_sq_red = chi_sq / length(target_v)
 
-                if chi_squared_red < chi_squared_red_arr[index]
-                    chi_squared_arr[index] = chi_squared
-                    chi_squared_red_arr[index] = chi_squared_red
-                    #Store the A and B normalisation parameters
-                    norm_arr[index, 1] = norm_sn
-                    norm_arr[index, 2] = norm_hg
-                    indexes[index, 1] = sn_i_idx
-                    indexes[index, 2] = hg_i_idx
-                    redshift_vals[index] = z
+                if chi_sq_red < chi_squared_red_arr[index]
+                    chi_squared_arr[index]     = chi_sq
+                    chi_squared_red_arr[index] = chi_sq_red
+                    norm_arr[index, 1]         = norm_transient
+                    norm_arr[index, 2]         = norm_host
+                    best_indices[index, 1]     = t_idx
+                    best_indices[index, 2]     = h_idx
+                    redshift_vals[index]       = z
 
-                    contamination = ((sum(hg_i .* norm_hg)) / (sum((sn_i .* norm_sn) .+ (hg_i .* norm_hg)))) * 100
-                    contam_array[index] = contamination
+                    host_flux_sum       = sum(host_v .* norm_host)
+                    total_flux          = sum(best_fit)
+                    contam_array[index] = (host_flux_sum / total_flux) * 100
 
-                    #Any masked out emission lines
-                    emission_lines[index] = emission_line
-                    emission_lines_λ[index] = emission_line_λ
+                    emission_lines_arr[index]   = emission_line
+                    emission_lines_λ_arr[index] = emission_line_λ
 
-                    binned_spectra_arr[index] = binned_spectra
-                    binned_λ_arr[index] = binned_spectra_λ
-                    binned_spectra_σ_arr[index] = binned_spectra_σ
+                    binned_spectra_arr[index]   = binned_flux
+                    binned_λ_arr[index]         = binned_λ
+                    binned_spectra_σ_arr[index] = binned_flux_σ
 
-                    best_fit_arr[index]       = collect(template_best_fit)
-                    best_fit_λ_arr[index]     = collect(λ_region)
-                    spectra_fit_region[index] = collect(spec_v)
-                    spectra_σ_fit_region[index] = collect(spec_σ_v)
-                    spectra_λ_fit_region[index] = collect((λ_region))
-                    sn_component_arr[index]   = collect(sn_v .* norm_sn)
-                    hg_component_arr[index]   = collect(hg_v .* norm_hg)
-
-
+                    best_fit_arr[index]            = collect(best_fit)
+                    best_fit_λ_arr[index]          = collect(host_λ_v)
+                    fitted_spectra_arr[index]      = collect(target_v)
+                    fitted_spectra_σ_arr[index]    = collect(target_σ_v)
+                    fitted_spectra_λ_arr[index]    = collect(host_λ_v)
+                    transient_component_arr[index] = collect(transient_v .* norm_transient)
+                    host_component_arr[index]      = collect(host_v .* norm_host)
                 end
             end
         end
     end
 
-    # ---- End fit_spectrum logic ----
-    fits = findall(x -> x != 0, indexes[:, 1])
+    # ── Collect results ───────────────────────────────────────────────────────
+    fitted_type_indices = findall(x -> x != 0, best_indices[:, 1])
 
-    top_fits_sn_type = [pure_sn_spectra_info["Type"][pure_sn_spectra_file_names[i]] for i in indexes[fits, 1]]
-    top_fits_hg_type = [pure_hg_spectra_info["HG Type"][pure_hg_spectra_file_names[i]] for i in indexes[fits, 2]]
-    top_fits_sn_a_v  = [pure_sn_spectra_info["SN A_v"][pure_sn_spectra_file_names[i]] for i in indexes[fits, 1]]
-    top_fits_Eb_v    = [i / 3.1 for i in top_fits_sn_a_v]
-    top_fits_phase   = [pure_sn_spectra_info["tau"][pure_sn_spectra_file_names[i]] for i in indexes[fits, 1]]
+    top_fit_types    = [transient_template_info["Type"][transient_template_names[i]]    for i in best_indices[fitted_type_indices, 1]]
+    top_fit_hg_types = [host_template_info["HG Type"][host_template_names[i]]          for i in best_indices[fitted_type_indices, 2]]
+    top_fit_av       = [transient_template_info["SN A_v"][transient_template_names[i]] for i in best_indices[fitted_type_indices, 1]]
+    top_fit_eb_v     = [av / 3.1 for av in top_fit_av]
+    top_fit_phase    = [transient_template_info["tau"][transient_template_names[i]]    for i in best_indices[fitted_type_indices, 1]]
 
-    # best_chi from argmin is an index into the full-length chi_squared_red_arr.
-    # Find where that sits within the `fits` subset for the type arrays.
-    best_chi_full  = argmin(chi_squared_red_arr)
-    best_chi       = findfirst(==(best_chi_full), fits)  # index into top_fits_* arrays
-    best_redshift  = redshift_vals[best_chi]
+    best_type_full_idx = argmin(chi_squared_red_arr)
+    best_type_idx      = findfirst(==(best_type_full_idx), fitted_type_indices)
+    best_redshift      = redshift_vals[best_type_full_idx]
 
-    if isempty(top_fits_sn_type) || isnothing(best_chi)
+    if isempty(top_fit_types) || isnothing(best_type_idx)
         best_type = "Unknown"
         println("--------------------")
         printstyled("ERROR: ", color=:red)
         println("Fitting $SN_ID - No fitting results found.")
         println("--------------------")
     else
-        best_type = top_fits_sn_type[best_chi]
+        best_type = top_fit_types[best_type_idx]
     end
 
     savepath = "/Users/edcharleton/PhD/SIREN/classifications_dir/plots"
 
     plotpath = show_plot ? plot_best_fit(
-        SN_ID, best_redshift,
-        indexes, pure_sn_spectra_info, pure_sn_spectra_file_names, #template info
-        pure_hg_spectra_info, pure_hg_spectra_file_names, #Template info
-        original_spectra_to_fit, original_spectra_to_fit_σ, original_specta_to_fit_λ, #Original spectra with emission lines and telurics
-        best_fit_arr, best_fit_λ_arr, sn_component_arr, hg_component_arr,
-        spectra_fit_region, spectra_σ_fit_region, spectra_λ_fit_region, #Region of the spectra that was actually fit
-        chi_squared_red_arr, redshift_vals,
-        emission_lines, emission_lines_λ,
-        savepath
-    ) : "No Plot Saved"
+        SN_ID,                          # e.g. "2024abc.fits" or full path
+        best_redshift,                  # Float from redshift_vals[best_type_full_idx]
 
+        # Template index array and metadata
+        best_indices,                   # n_types × 2 Int array of [t_idx, h_idx]
+        transient_template_info,        # OrderedDict with "Type", "tau", "SN A_v", etc.
+        transient_template_names,       # Vector of template filenames
+        host_template_info,             # OrderedDict with "HG Type" etc.
+        host_template_names,            # Vector of host filenames
+
+        # Original unbinned target spectrum (before any processing)
+        original_target_flux,           # Vector{Float32} — raw observed flux
+        original_target_flux_σ,         # Vector{Float32} — raw observed uncertainty
+        original_target_λ,              # Vector{Float32} — raw observed wavelengths
+
+        # Fit results stored per best type
+        best_fit_arr,                   # Vector{Array} — best fit flux per type
+        best_fit_λ_arr,                 # Vector{Array} — wavelengths of best fit
+        transient_component_arr,        # Vector{Array} — transient-only contribution
+        host_component_arr,             # Vector{Array} — host-only contribution
+
+        # Binned + processed spectrum (what was actually fit)
+        fitted_spectra_arr,             # Vector{Array} — binned flux in fit region
+        fitted_spectra_σ_arr,           # Vector{Array} — binned uncertainty in fit region
+        fitted_spectra_λ_arr,           # Vector{Array} — rest-frame λ of fit region
+
+        # Diagnostics
+        chi_squared_red_arr,            # Vector{Float64} — reduced χ² per type
+        redshift_vals,                  # Vector{Float32} — best redshift per type
+
+        # Emission lines that were masked out
+        emission_lines_arr,             # Vector{Array} — masked flux values
+        emission_lines_λ_arr,           # Vector{Array} — masked wavelengths
+
+        savepath                        # String path to save dir, or nothing to display
+    ) : "No Plot Saved"
 
     return norm_arr, chi_squared_red_arr, plotpath, best_redshift, best_type
 end

@@ -247,7 +247,7 @@ template_wl = np.arange(2315, 9015, 15) #Make this longer
 spectra_resolution = len(template_wl)
 
 generate_supernova = True
-generate_hosts = False
+generate_hosts = True
 generate_transients = True
 
 pure_sn_dir = 'transient_template_dir'
@@ -334,6 +334,7 @@ np.savetxt(os.path.join(pure_hg_dir, 'metadata', 'pure_hg_spectra_names.txt'), p
 
 #Export the dataframes to a json file
 pure_hg_spectra_df.to_json(os.path.join(pure_hg_dir, 'metadata', 'pure_hg_spectra_data.json'))
+
 #--------------------------------------------------------Generate the supernova spectra------------------------------------------------------------
 
 print('---------------------------')
@@ -412,7 +413,12 @@ if generate_supernova == True:
             model_full_range = len(full_phases)
             pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, wavelength)))
             for tau_idx in tau:
-                
+                sn_type_i = sn_types[np.where(model_names == i)[0][0]]
+
+                if sn_type_i != "Ia":
+                    continue
+
+
                 vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range))
                 hg_type_igx = 0
 
@@ -477,6 +483,7 @@ if ".DS_Store" in sn_types:
 print(sn_types)
 
 for sn_type in tqdm(sn_types):
+    continue
     #Check to see if the type directory already exists
     if os.path.exists(os.path.join(pure_sn_dir, sn_type)):
         pass
@@ -575,6 +582,7 @@ if "supersnid_metadata.csv" in sn_types:
     sn_types.remove("supersnid_metadata.csv")
 
 for sn_type in tqdm(sn_types):
+    continue
     #Check to see if the type directory already exists
     if os.path.exists(os.path.join(pure_sn_dir, sn_type)):
         pass
@@ -682,6 +690,7 @@ for i in transient_types:
     os.makedirs(os.path.join(pure_sn_dir, i), exist_ok=True)
 
 for type in tqdm(transient_types):
+    continue
     for transient_av in extinction_range:
         transient_names = os.listdir(os.path.join('custom_transients_dir', type))
 
