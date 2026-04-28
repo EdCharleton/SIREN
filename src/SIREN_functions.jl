@@ -27,6 +27,38 @@ module ClassifierFunctions
     using Plots
 
     #------------------------------------------------------------
+    # Hardware-Accelerated Math Setup
+    #------------------------------------------------------------
+    is_cuda_loaded = false
+    is_metal_loaded = false
+    try
+        import CUDA
+        is_cuda_loaded = CUDA.functional()
+    catch
+    end
+
+    try
+        import Metal
+        is_metal_loaded = Metal.functional()
+    catch
+    end
+
+    function to_gpu(x)
+        if is_cuda_loaded
+            return CUDA.CuArray(x)
+        else
+            # Apple Silicon Metal GPUs (M-series) do not have physically integrated FP64 logic blocks.
+            # Thus, we route execution to the native multi-threaded CPU OpenBLAS which executes 
+            # Dense Matrix FP64 perfectly and blazingly fast.
+            return Array(x)
+        end
+    end
+
+    # Return array to CPU safely
+    function to_cpu(x)
+        return Array(x)
+    end
+    #------------------------------------------------------------
     #Define Functions
     #------------------------------------------------------------
 
@@ -612,15 +644,30 @@ end
         original_spectra_σ = deepcopy(input_spectra_σ)
 
         half = window_size ÷ 2
+        n = length(input_spectra)
+        flagged = fill(false, n)
 
         for iter in 1:10
-            n       = length(input_spectra)
-            flagged = fill(false, n)
-
+            new_flags = false
             for i in 1:n
+                if flagged[i]
+                    continue
+                end
+
                 lo = max(1, i - half)
                 hi = min(n, i + half)
-                window_flux = input_spectra[lo:hi]
+                
+                # Get window flux ignoring existing flagged items
+                window_flux = Float32[]
+                for j in lo:hi
+                    if !flagged[j]
+                        push!(window_flux, input_spectra[j])
+                    end
+                end
+                
+                if isempty(window_flux)
+                    continue
+                end
 
                 win_median = median(window_flux)
                 win_mad    = median(abs.(window_flux .- win_median))
@@ -628,29 +675,22 @@ end
 
                 if win_noise > 0 && input_spectra[i] > win_median + σ * win_noise
                     flagged[i] = true
+                    new_flags = true
                 end
             end
-
-            keep_index = findall(.!flagged)
-            sum(flagged) == 0 && break
-
-            input_spectra   = input_spectra[keep_index]
-            input_spectra_σ = input_spectra_σ[keep_index]
-            input_spectra_λ = input_spectra_λ[keep_index]
+            !new_flags && break
         end
 
-        missing_λ       = setdiff(original_spectra_λ, input_spectra_λ)
-        missing_indices = findall(x -> x in missing_λ, original_spectra_λ)
+        missing_indices = findall(flagged)
+        
+        output_spectra   = deepcopy(input_spectra)
+        output_spectra_σ = deepcopy(input_spectra_σ)
+        output_spectra_λ = deepcopy(input_spectra_λ)
 
-        output_spectra   = original_spectra
-        output_spectra_σ = original_spectra_σ
-        output_spectra_λ = original_spectra_λ
+        # Downweight emission lines strictly via massive error
+        output_spectra_σ[missing_indices] .= 1e3
 
-        output_spectra[missing_indices]   .= NaN
-        output_spectra_σ[missing_indices] .= NaN
-        output_spectra_λ[missing_indices] .= NaN
-
-        return original_spectra_λ[missing_indices], original_spectra[missing_indices],
+        return input_spectra_λ[missing_indices], input_spectra[missing_indices],
             output_spectra_λ, output_spectra, output_spectra_σ
     end
     #------------------- Pre - Process Spectra -------------------
@@ -815,6 +855,7 @@ function chi_squared_classifier(
     # ── Per-type result arrays ────────────────────────────────────────────────
     chi_squared_arr     = fill(1e10, n_types)
     chi_squared_red_arr = fill(1e10, n_types)
+    println(typeof(chi_squared_red_arr))
 
     norm_arr      = zeros(Float32, n_types, 2)
     redshift_vals = zeros(Float32, n_types)
@@ -901,116 +942,180 @@ function chi_squared_classifier(
             if transient_template_info["Galactic Source"][transient_template_names[t_idx]] == "Y"
         )
 
-        # ── Transient template loop ───────────────────────────────────────────
-        # One lock per type — protects the best-result update for each type
-        # independently, so threads fitting different types never block each other.
-        type_locks = [ReentrantLock() for _ in 1:n_types]
+        # ── Matrix formulation for GPU / Dense Algebra ──────────────────────────
+        N_lam = length(frozen_flux)
+        N_T = length(transient_templates)
+        N_H = length(host_templates)
+        
+        # Build dense target vectors safely with Double Precision (Float64)
+        target_w = zeros(Float64, N_lam)
+        target_f = zeros(Float64, N_lam)
+        target_valid = .!isnan.(frozen_flux) .& .!isnan.(frozen_flux_σ) .& (frozen_flux_σ .> 0)
+        target_w[target_valid] .= 1.0 ./ (frozen_flux_σ[target_valid].^2)
+        target_f[target_valid] .= frozen_flux[target_valid]
+        
+        T_mat = zeros(Float64, N_lam, N_T)
+        MT_mat = zeros(Float64, N_lam, N_T)
+        H_mat = zeros(Float64, N_lam, N_H)
+        MH_mat = zeros(Float64, N_lam, N_H)
 
-        Threads.@threads for t_idx in 1:length(transient_templates)
+        # Build Host Matrix
+        for h_idx in 1:N_H
+            if h_idx in non_standard_template_indices
+                common_set = intersect(Set(host_template_λ_z[h_idx]), frozen_λ_set)
+                common_idx_h = findall(in(common_set), host_template_λ_z[h_idx])
+                common_idx_z = findall(in(common_set), frozen_λ)
+                H_mat[common_idx_z, h_idx] .= host_templates[h_idx][common_idx_h]
+                MH_mat[common_idx_z, h_idx] .= 1.0f0
+            else
+                H_mat[:, h_idx] .= host_templates[h_idx]
+                MH_mat[:, h_idx] .= 1.0f0
+            end
+            nan_mask = isnan.(H_mat[:, h_idx])
+            if any(nan_mask)
+                H_mat[nan_mask, h_idx] .= 0.0f0
+                MH_mat[nan_mask, h_idx] .= 0.0f0
+            end
+        end
 
-            t_idx in galactic_transients && z != 0.0 && continue
-
-            type  = transient_template_info["Type"][transient_template_names[t_idx]]
-            index = type_to_index[type]
-
-            is_non_standard = t_idx in non_standard_template_indices
-
-            if is_non_standard
-                transient_λ_full = transient_template_λ_z[t_idx]
-                transient_λ_set  = Set(transient_λ_full)
-                common_set       = intersect(transient_λ_set, frozen_λ_set)
-
-                if (length(common_set) / length(frozen_flux)) < (minimum_overlap / 100)
+        # Build Transient Matrix
+        for t_idx in 1:N_T
+            if z != 0.0 && t_idx in galactic_transients
+                continue
+            end
+            if t_idx in non_standard_template_indices
+                common_set = intersect(Set(transient_template_λ_z[t_idx]), frozen_λ_set)
+                if (length(common_set) / N_lam) < (minimum_overlap / 100)
                     continue
                 end
-
-                common_idx_transient    = findall(in(common_set), transient_λ_full)
-                common_idx_target       = findall(in(common_set), frozen_λ)
-                transient_flux_t        = transient_templates[t_idx][common_idx_transient]
-                transient_λ_t           = transient_λ_full[common_idx_transient]
-                target_flux_t           = frozen_flux[common_idx_target]
-                target_flux_σ_t         = frozen_flux_σ[common_idx_target]
-                transient_λ_set_trimmed = Set(transient_λ_t)
+                common_idx_t = findall(in(common_set), transient_template_λ_z[t_idx])
+                common_idx_z = findall(in(common_set), frozen_λ)
+                T_mat[common_idx_z, t_idx] .= transient_templates[t_idx][common_idx_t]
+                MT_mat[common_idx_z, t_idx] .= 1.0f0
             else
-                transient_flux_t        = transient_templates[t_idx]
-                transient_λ_t           = transient_template_λ_z[t_idx]
-                target_flux_t           = frozen_flux
-                target_flux_σ_t         = frozen_flux_σ
-                transient_λ_set_trimmed = nothing
+                T_mat[:, t_idx] .= transient_templates[t_idx]
+                MT_mat[:, t_idx] .= 1.0f0
             end
+            nan_mask = isnan.(T_mat[:, t_idx])
+            if any(nan_mask)
+                T_mat[nan_mask, t_idx] .= 0.0f0
+                MT_mat[nan_mask, t_idx] .= 0.0f0
+            end
+        end
+        
+        # Optional offload to GPU if functional (otherwise native dense matrix runs locally)
+        println("target flux", target_f)
+        Y_gpu  = to_gpu(target_f)
+        W_gpu  = to_gpu(target_w)
+        T_gpu  = to_gpu(T_mat)
+        MT_gpu = to_gpu(MT_mat)
+        H_gpu  = to_gpu(H_mat)
+        MH_gpu = to_gpu(MH_mat)
+        
+        # Prepare components analytically
+        WT = W_gpu .* MT_gpu                  
+        WT_Y = WT .* Y_gpu                    
+        WT_T = WT .* T_gpu                    
+        WT_T2 = WT_T .* T_gpu                 
+        H_clean = H_gpu .* MH_gpu             
 
-            # ── Host template loop ────────────────────────────────────────────
-            for h_idx in 1:length(host_templates)
+        # Executing primary Matrix operations via BLAS GEMM directly inside hardware backend!
+        S_sh = transpose(WT_T) * H_clean      
+        S_os = transpose(WT_T .* Y_gpu) * MH_gpu       
+        S_oh = transpose(WT) * (H_clean .* Y_gpu) 
+        S_ss = transpose(WT_T2) * MH_gpu      
+        S_hh = transpose(WT) * (H_clean .* H_clean) 
+        S_oo = transpose(WT .* (Y_gpu.^2)) * MH_gpu   
+        N_pts = transpose(MT_gpu) * MH_gpu    
 
-                if is_non_standard
-                    host_λ_full     = host_template_λ_z[h_idx]
-                    common_idx_host = findall(in(transient_λ_set_trimmed), host_λ_full)
+        # Mathematical Determinants (protecting from div-by-zero singularities gracefully)
+        det = max.(S_ss .* S_hh .- S_sh.^2, 1e-10) 
+        
+        B = (S_os .* S_hh .- S_oh .* S_sh) ./ det
+        C = (S_oh .* S_ss .- S_os .* S_sh) ./ det
 
-                    if (length(common_idx_host) / length(frozen_flux)) < (minimum_overlap / 100)
-                        continue
-                    end
+        chi_sq = S_oo .+ B.^2 .* S_ss .+ C.^2 .* S_hh .- 2.0 .* B .* S_os .- 2.0 .* C .* S_oh .+ 2.0 .* B .* C .* S_sh
+        chi_sq_red = chi_sq ./ max.(N_pts, 1.0)
+        
+        # Return exact coefficients matching matrix arrays locally 
+        B_cpu = to_cpu(B)
+        C_cpu = to_cpu(C)
+        chi_sq_red_cpu = to_cpu(chi_sq_red)
+        N_pts_cpu = to_cpu(N_pts)
+        
+        valid_BC = (B_cpu .>= 0.0) .& (C_cpu .>= 0.0) .& (N_pts_cpu .> 0.0)
+        chi_sq_red_cpu[.!valid_BC] .= Inf
 
-                    host_flux_h = host_templates[h_idx][common_idx_host]
-                    host_λ_h    = host_λ_full[common_idx_host]
-                else
-                    host_flux_h = host_templates[h_idx]
-                    host_λ_h    = host_template_λ_z[h_idx]
+        println("==== EXACT DEBUG OUTPUT ====")
+        println("any_valid=", any(valid_BC), " max_B=", maximum(B_cpu), " max_C=", maximum(C_cpu))
+        println("Chi squre= ", minimum(chi_sq_red_cpu))
+        println("min_Npts=", minimum(N_pts_cpu), " max_Npts=", maximum(N_pts_cpu))
+        println("max_Sos=", maximum(to_cpu(S_os)), " max_Soh=", maximum(to_cpu(S_oh)))
+        println("max_Sss=", maximum(to_cpu(S_ss)), " max_Shh=", maximum(to_cpu(S_hh)))
+        println("max_Ssh=", maximum(to_cpu(S_sh)), " max_WT=", maximum(to_cpu(WT)))
+        println("min_det=", minimum(to_cpu(det)))
+        println("============================")
+
+        type_indices = [type_to_index[transient_template_info["Type"][transient_template_names[i]]] for i in 1:N_T]
+        type_locks = [ReentrantLock() for _ in 1:n_types]
+
+        # Thread-safe assignments since matrix math operates over all variables jointly
+        Threads.@threads for t_idx in 1:N_T
+            t_idx in galactic_transients && z != 0.0 && continue
+            
+            t_type_index = type_indices[t_idx]
+            
+            for h_idx in 1:N_H
+                c_val = chi_sq_red_cpu[t_idx, h_idx]
+                
+                # B and C failed bounds (set to inf) or was worse model fit
+                if c_val >= chi_squared_red_arr[t_type_index]
+                    continue
                 end
+                
+                lock(type_locks[t_type_index]) do
+                    if c_val < chi_squared_red_arr[t_type_index]
+                        
+                        norm_transient = B_cpu[t_idx, h_idx]
+                        norm_host = C_cpu[t_idx, h_idx]
+                        
+                        chi_squared_arr[t_type_index]     = c_val * N_pts_cpu[t_idx, h_idx]
+                        chi_squared_red_arr[t_type_index] = c_val
+                        norm_arr[t_type_index, 1]         = norm_transient
+                        norm_arr[t_type_index, 2]         = norm_host
+                        best_indices[t_type_index, 1]     = t_idx
+                        best_indices[t_type_index, 2]     = h_idx
+                        redshift_vals[t_type_index]       = z
 
-                # ── NaN removal on local copies so outer arrays are never mutated ──
-                valid = .!isnan.(target_flux_t)  .& .!isnan.(target_flux_σ_t) .&
-                        .!isnan.(transient_flux_t) .& .!isnan.(host_flux_h)
+                        # Reconstruct precisely to output metrics
+                        valid_mask = (target_w .> 0) .& (MT_mat[:, t_idx] .> 0) .& (MH_mat[:, h_idx] .> 0)
+                        
+                        b_target_v = target_f[valid_mask]
+                        b_target_σ_v = frozen_flux_σ[valid_mask]
+                        b_transient_v = T_mat[valid_mask, t_idx]
+                        b_host_v = H_mat[valid_mask, h_idx]
+                        b_host_λ = frozen_λ[valid_mask]
+                        
+                        best_f = (b_transient_v .* norm_transient) .+ (b_host_v .* norm_host)
+                        
+                        host_flux_sum = sum(b_host_v .* norm_host)
+                        total_flux = sum(best_f)
+                        contam_array[t_type_index] = (host_flux_sum / total_flux) * 100
 
-                sum(valid) == 0 && continue
+                        emission_lines_arr[t_type_index]   = emission_line
+                        emission_lines_λ_arr[t_type_index] = emission_line_λ
 
-                target_v    = target_flux_t[valid]
-                target_σ_v  = target_flux_σ_t[valid]
-                transient_v = transient_flux_t[valid]
-                host_v      = host_flux_h[valid]
-                host_λ_v    = host_λ_h[valid]
+                        binned_spectra_arr[t_type_index]   = binned_flux
+                        binned_λ_arr[t_type_index]         = binned_λ
+                        binned_spectra_σ_arr[t_type_index] = binned_flux_σ
 
-                norm_transient = calculate_B(target_v, transient_v, host_v, target_σ_v)
-                norm_host      = calculate_C(target_v, transient_v, host_v, target_σ_v)
-
-                norm_transient < 0 || norm_host < 0 && continue
-
-                best_fit   = (transient_v .* norm_transient) .+ (host_v .* norm_host)
-                chi_sq     = sum((target_v .- best_fit).^2 ./ target_σ_v.^2)
-                chi_sq_red = chi_sq / length(target_v)
-
-                # ── Thread-safe update ────────────────────────────────────────
-                # Lock only the type-specific slot, so threads working on
-                # different types never block each other. The chi² check and
-                # write are inside the same lock to prevent a TOCTOU race where
-                # two threads both pass the check then both overwrite.
-                lock(type_locks[index]) do
-                    if chi_sq_red < chi_squared_red_arr[index]
-                        chi_squared_arr[index]     = chi_sq
-                        chi_squared_red_arr[index] = chi_sq_red
-                        norm_arr[index, 1]         = norm_transient
-                        norm_arr[index, 2]         = norm_host
-                        best_indices[index, 1]     = t_idx
-                        best_indices[index, 2]     = h_idx
-                        redshift_vals[index]       = z
-
-                        host_flux_sum       = sum(host_v .* norm_host)
-                        total_flux          = sum(best_fit)
-                        contam_array[index] = (host_flux_sum / total_flux) * 100
-
-                        emission_lines_arr[index]   = emission_line
-                        emission_lines_λ_arr[index] = emission_line_λ
-
-                        binned_spectra_arr[index]   = binned_flux
-                        binned_λ_arr[index]         = binned_λ
-                        binned_spectra_σ_arr[index] = binned_flux_σ
-
-                        best_fit_arr[index]            = collect(best_fit)
-                        best_fit_λ_arr[index]          = collect(host_λ_v)
-                        fitted_spectra_arr[index]      = collect(target_v)
-                        fitted_spectra_σ_arr[index]    = collect(target_σ_v)
-                        fitted_spectra_λ_arr[index]    = collect(host_λ_v)
-                        transient_component_arr[index] = collect(transient_v .* norm_transient)
-                        host_component_arr[index]      = collect(host_v .* norm_host)
+                        best_fit_arr[t_type_index]            = collect(best_f)
+                        best_fit_λ_arr[t_type_index]          = collect(b_host_λ)
+                        fitted_spectra_arr[t_type_index]      = collect(b_target_v)
+                        fitted_spectra_σ_arr[t_type_index]    = collect(b_target_σ_v)
+                        fitted_spectra_λ_arr[t_type_index]    = collect(b_host_λ)
+                        transient_component_arr[t_type_index] = collect(b_transient_v .* norm_transient)
+                        host_component_arr[t_type_index]      = collect(b_host_v .* norm_host)
                     end
                 end
             end
@@ -1040,7 +1145,7 @@ function chi_squared_classifier(
         best_type = top_fit_types[best_type_idx]
     end
 
-    savepath = "/Users/edcharleton/PhD/SIREN/classifications_dir/plots"
+    savepath = "/Users/chris/Documents/siren_plots"
 
     plotpath = show_plot ? plot_best_fit(
         SN_ID,                          # e.g. "2024abc.fits" or full path
