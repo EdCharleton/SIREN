@@ -257,7 +257,7 @@ module ClassifierFunctions
         end
     end
 
-    title!(p, "$display_name  |  z = $z_best  |  Phase = $phase days  |  χ²ᵣ = $chi_red")
+    title!(p, "$display_name  |  z = $z_best  | type = $transient_type |  Phase = $phase days")
 
     if !isnothing(savepath)
         outpath = joinpath(savepath, "$(display_name)_best_fit.png")
@@ -795,8 +795,6 @@ end
         return C
     end
 
-
-
     #------------------- Chi Squared Classifier -------------------
 function chi_squared_classifier(
         transient_template_info, transient_template_names, transient_template_files,
@@ -873,7 +871,6 @@ function chi_squared_classifier(
         redshifted_flux_σ = deepcopy(cleaned_flux_σ)
         redshifted_λ      = deepcopy(cleaned_λ)
 
-
         redshifted_flux, redshifted_flux_σ, redshifted_λ,
         transient_templates, host_templates,
         transient_template_λ_z, host_template_λ_z,
@@ -905,7 +902,11 @@ function chi_squared_classifier(
         )
 
         # ── Transient template loop ───────────────────────────────────────────
-        for t_idx in ProgressBar(1:length(transient_templates))
+        # One lock per type — protects the best-result update for each type
+        # independently, so threads fitting different types never block each other.
+        type_locks = [ReentrantLock() for _ in 1:n_types]
+
+        Threads.@threads for t_idx in 1:length(transient_templates)
 
             t_idx in galactic_transients && z != 0.0 && continue
 
@@ -957,7 +958,6 @@ function chi_squared_classifier(
                 end
 
                 # ── NaN removal on local copies so outer arrays are never mutated ──
-                # target_flux_t / target_flux_σ_t must stay intact for the next h_idx
                 valid = .!isnan.(target_flux_t)  .& .!isnan.(target_flux_σ_t) .&
                         .!isnan.(transient_flux_t) .& .!isnan.(host_flux_h)
 
@@ -978,33 +978,40 @@ function chi_squared_classifier(
                 chi_sq     = sum((target_v .- best_fit).^2 ./ target_σ_v.^2)
                 chi_sq_red = chi_sq / length(target_v)
 
-                if chi_sq_red < chi_squared_red_arr[index]
-                    chi_squared_arr[index]     = chi_sq
-                    chi_squared_red_arr[index] = chi_sq_red
-                    norm_arr[index, 1]         = norm_transient
-                    norm_arr[index, 2]         = norm_host
-                    best_indices[index, 1]     = t_idx
-                    best_indices[index, 2]     = h_idx
-                    redshift_vals[index]       = z
+                # ── Thread-safe update ────────────────────────────────────────
+                # Lock only the type-specific slot, so threads working on
+                # different types never block each other. The chi² check and
+                # write are inside the same lock to prevent a TOCTOU race where
+                # two threads both pass the check then both overwrite.
+                lock(type_locks[index]) do
+                    if chi_sq_red < chi_squared_red_arr[index]
+                        chi_squared_arr[index]     = chi_sq
+                        chi_squared_red_arr[index] = chi_sq_red
+                        norm_arr[index, 1]         = norm_transient
+                        norm_arr[index, 2]         = norm_host
+                        best_indices[index, 1]     = t_idx
+                        best_indices[index, 2]     = h_idx
+                        redshift_vals[index]       = z
 
-                    host_flux_sum       = sum(host_v .* norm_host)
-                    total_flux          = sum(best_fit)
-                    contam_array[index] = (host_flux_sum / total_flux) * 100
+                        host_flux_sum       = sum(host_v .* norm_host)
+                        total_flux          = sum(best_fit)
+                        contam_array[index] = (host_flux_sum / total_flux) * 100
 
-                    emission_lines_arr[index]   = emission_line
-                    emission_lines_λ_arr[index] = emission_line_λ
+                        emission_lines_arr[index]   = emission_line
+                        emission_lines_λ_arr[index] = emission_line_λ
 
-                    binned_spectra_arr[index]   = binned_flux
-                    binned_λ_arr[index]         = binned_λ
-                    binned_spectra_σ_arr[index] = binned_flux_σ
+                        binned_spectra_arr[index]   = binned_flux
+                        binned_λ_arr[index]         = binned_λ
+                        binned_spectra_σ_arr[index] = binned_flux_σ
 
-                    best_fit_arr[index]            = collect(best_fit)
-                    best_fit_λ_arr[index]          = collect(host_λ_v)
-                    fitted_spectra_arr[index]      = collect(target_v)
-                    fitted_spectra_σ_arr[index]    = collect(target_σ_v)
-                    fitted_spectra_λ_arr[index]    = collect(host_λ_v)
-                    transient_component_arr[index] = collect(transient_v .* norm_transient)
-                    host_component_arr[index]      = collect(host_v .* norm_host)
+                        best_fit_arr[index]            = collect(best_fit)
+                        best_fit_λ_arr[index]          = collect(host_λ_v)
+                        fitted_spectra_arr[index]      = collect(target_v)
+                        fitted_spectra_σ_arr[index]    = collect(target_σ_v)
+                        fitted_spectra_λ_arr[index]    = collect(host_λ_v)
+                        transient_component_arr[index] = collect(transient_v .* norm_transient)
+                        host_component_arr[index]      = collect(host_v .* norm_host)
+                    end
                 end
             end
         end

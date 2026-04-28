@@ -42,10 +42,10 @@ function SIREN_main()
         minimum_overlap = parsed_args["minimum_overlap"]
     else
         # Running in REPL mode, add your inputs to the below:
-        file_path = "/Users/edcharleton/PhD/SIREN/spectra_to_classify/TiDES Spectra/TiDES-SN26akd.ascii"
-        target_redshift = 0.08
+        file_path = "/Users/edcharleton/PhD/SIREN/spectra_to_classify/TiDES Spectra/TiDES-SN26ahb.ascii"
+        target_redshift = 0.06
         target_remove_telluric = "N"
-        minimum_overlap = 75
+        minimum_overlap = 80
         galactic_source = "N"
         show_plots = true
         batch_mode = false
