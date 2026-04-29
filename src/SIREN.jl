@@ -42,10 +42,10 @@ function SIREN_main()
         minimum_overlap = parsed_args["minimum_overlap"]
     else
         # Running in REPL mode, add your inputs to the below:
-        file_path = "/Users/chris/Documents/SIRENplus/TiDES-SN26aip.ascii"
+        file_path = "/Users/edcharleton/PhD/SIREN/spectra_to_classify/TiDES Spectra/TiDES-SN26aip.ascii"
         target_redshift = "None"
         target_remove_telluric = "N"
-        minimum_overlap = 80
+        minimum_overlap = 90
         galactic_source = "N"
         show_plots = true
         batch_mode = false
@@ -102,8 +102,7 @@ function SIREN_main()
 
     #-------------------------------------------------- RUN THE CLASSIFIER --------------------------------------------------
     println("----------------------------------------------")
-    println("Classifying ", length(target_spectra_names), " spectra with ", n_threads, " threads...")
-    println("----------------------------------------------")
+    println("Beginning Classifications....")
 
     #Loop through all input spectra, if in batch mode, display the progress bar
     for n in (batch_mode ? ProgressBar(target_spectra_names) : (target_spectra_names))
@@ -129,7 +128,6 @@ function SIREN_main()
 
         #print all the unique types in the template metadata to the console
         unique_types = unique(values(sn_template_metadata["Type"]))
-        println(unique_types)
 
         if batch_mode == false
             println("Classifying ", target_name, "...")

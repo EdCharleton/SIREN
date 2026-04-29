@@ -284,44 +284,43 @@ hg_ID = 1
 if generate_hosts == True:
     for hg_i in tqdm(range(number_of_host_galaxies)):
         hg_redshift = 0.0
-        for hg_a_v in extinction_range:
-            host_galaxy_info = np.loadtxt(os.path.join(host_galaxy_directory, host_galaxy_names[hg_i]))
-            host_galaxy_wl = host_galaxy_info[:, 0]
-            host_galaxy_flux = host_galaxy_info[:, 1]
-            #host_galaxy_mas = host_galaxy_info[:, 2]
+        hg_a_v = 0.0
+        host_galaxy_info = np.loadtxt(os.path.join(host_galaxy_directory, host_galaxy_names[hg_i]))
+        host_galaxy_wl = host_galaxy_info[:, 0]
+        host_galaxy_flux = host_galaxy_info[:, 1]
+        #host_galaxy_mas = host_galaxy_info[:, 2]
 
 
-            #resample the spectrum to match the wavelength of the sn templates
-            pure_hg_spectra = spectres.spectres(template_wl, host_galaxy_wl, host_galaxy_flux, verbose = False)
-            
-            # Convert the variables to 'double' data type
-            template_wl = template_wl.astype('double')
-            pure_hg_spectra = pure_hg_spectra.astype('double')
-            #pure_hg_mask = host_galaxy_mas.astype('double')
+        #resample the spectrum to match the wavelength of the sn templates
+        pure_hg_spectra = spectres.spectres(template_wl, host_galaxy_wl, host_galaxy_flux, verbose = False)
+        
+        # Convert the variables to 'double' data type
+        template_wl = template_wl.astype('double')
+        pure_hg_spectra = pure_hg_spectra.astype('double')
+        #pure_hg_mask = host_galaxy_mas.astype('double')
 
-            #Redden the host galaxy spectra
-            dusty_hg_spectra = extinction.apply(extinction.ccm89(template_wl, a_v=hg_a_v, r_v=r_v), pure_hg_spectra)
+        #Redden the host galaxy spectra
 
-            hg_mean = np.mean(dusty_hg_spectra)
-            norm_hg_spectra = (dusty_hg_spectra / hg_mean * 100)
+        hg_mean = np.mean(pure_hg_spectra)
+        norm_hg_spectra = (pure_hg_spectra / hg_mean * 100)
 
-            #Convert dusty_sn_spectra to 1D array of float 16
-            output_hg_spectra = norm_hg_spectra.astype('float16')
-            #output_hg_mask = pure_hg_mask.astype('float16')
+        #Convert dusty_sn_spectra to 1D array of float 16
+        output_hg_spectra = norm_hg_spectra.astype('float16')
+        #output_hg_mask = pure_hg_mask.astype('float16')
 
-            hg_template_file_name = ('{0}_{1}_{2}.txt'.format(host_galaxy_names[hg_i], np.round(hg_redshift, 2), np.round(hg_a_v, 2)))
+        hg_template_file_name = ('{0}.txt'.format(host_galaxy_names[hg_i]))
 
-            #output = np.column_stack((template_wl, output_hg_spectra, output_hg_mask))
-            output = np.column_stack((template_wl, output_hg_spectra))
+        #output = np.column_stack((template_wl, output_hg_spectra, output_hg_mask))
+        output = np.column_stack((template_wl, output_hg_spectra))
 
-            np.savetxt(os.path.join(pure_hg_dir, hg_template_file_name), output, delimiter=',', fmt='%s')
+        np.savetxt(os.path.join(pure_hg_dir, hg_template_file_name), output, delimiter=',', fmt='%s')
 
-            pure_hg_spectrum_info = {
-                'redshift': hg_redshift,
-                'HG Type': host_galaxy_names[hg_i],
-                'HG A_v': hg_a_v,
-                'path': str(os.path.join(pure_hg_dir))}
-            pure_hg_spectra_dict[hg_template_file_name] = pure_hg_spectrum_info
+        pure_hg_spectrum_info = {
+            'redshift': hg_redshift,
+            'HG Type': host_galaxy_names[hg_i],
+            'HG A_v': hg_a_v,
+            'path': str(os.path.join(pure_hg_dir))}
+        pure_hg_spectra_dict[hg_template_file_name] = pure_hg_spectrum_info
 
 
 pure_hg_spectra_df = pd.DataFrame.from_dict(pure_hg_spectra_dict, orient = 'index')
@@ -354,7 +353,6 @@ if generate_supernova == True:
     #list of SNCosmo models
     model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr", "nugent-sn91t", "nugent-sn91bg", "nugent-sn1a", "hsiao", "s11-2006jl", "v19-2006t", "v19-2012ap-corr"])
     sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "91t-like", "91bg-like", "Ia", "Ia", "IIP", "IIb", "Ic-BL"])
-    print(sn_types)
     galactic_source = np.array(['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', "N", "N", "N"])
 
     salt3_tau = generate_phases(-18, 50, 1) #Ia
@@ -389,91 +387,89 @@ if generate_supernova == True:
     os.makedirs(os.path.join(pure_sn_dir, 'metadata'), exist_ok=True)
 
     for i in tqdm(model_names):
-        for sn_a_v in extinction_range:
-            z_igx = 0.0
-            #Generate the model
-            salt3_model, redshift, minimum_wl, maximum_wl = generate_model(i, template_wl, z_igx)
-            if minimum_wl < 2315:
-                minimum_wl = 2315
+        z_igx = 0.0
+        sn_a_v = 0.0
+        #Generate the model
+        salt3_model, redshift, minimum_wl, maximum_wl = generate_model(i, template_wl, z_igx)
+        if minimum_wl < 2315:
+            minimum_wl = 2315
+        else:
+            minimum_wl = minimum_wl
+
+        if maximum_wl > 9015:
+            maximum_wl = 9015
+        else:
+            maximum_wl = maximum_wl
+
+        wavelength = np.arange(2315, 9015, 15)
+        spectra_resolution = len(wavelength)
+
+        #Set up the phases
+        tau = phases_dict[i]  
+        
+        full_phases = np.arange(-20, 70, 1)
+        model_full_range = len(full_phases)
+        pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, wavelength)))
+        for tau_idx in tau:
+            sn_type_i = sn_types[np.where(model_names == i)[0][0]]
+
+            if sn_type_i != "Ia":
+                continue
+
+
+            vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range))
+            hg_type_igx = 0
+
+            single_sn_spectrum = pure_sn_spectra[int(tau_idx - full_phases[0])]
+
+            # Convert the variables to 'double' data type
+            template_wl = template_wl.astype('double')
+            wavelength = wavelength.astype('double')
+            pure_sn_spectrum = single_sn_spectrum.astype('double')
+
+
+            #Scale up 
+            sn_mean = np.mean(pure_sn_spectrum)
+            norm_sn_spectra = (pure_sn_spectrum / sn_mean * 100)
+
+            #Convert dusty_sn_spectra to 1D array of float 16
+            output_sn_spectra = norm_sn_spectra.astype('float16')
+
+            sn_type_path = ("type_{0}".format(sn_types[np.where(model_names == i)[0][0]]))
+            sn_template_file_name = ('{0}_{1}.txt'.format(i, tau_idx))
+
+
+            #Save the wavelength and spectrum to a file
+            output = np.column_stack((wavelength, output_sn_spectra))
+
+            np.savetxt(os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name), output, delimiter=',', fmt='%s')
+
+            #Create the plots of the individual spectra at redshift 0 and E(b-v) 0
+            if np.round(redshift, 2) == 0.0 and np.round(sn_a_v, 2) == 0.0:
+                os.makedirs(os.path.join("python_dir", 'plots', i), exist_ok=True)
+
+                create_plot([wavelength], [output_sn_spectra], ['Spectra'], '{0} at time = {1}'.format(i, tau_idx), 'Wavelength (Angstroms)', 'Flux', os.path.join("python_dir", 'plots', i), '{0}_{1}'.format(i, tau_idx-tau[0]))
+
+            if tau[0] == 1:
+                t0 = tau_idx
+                tau_idx = "N/A"
             else:
-                minimum_wl = minimum_wl
-
-            if maximum_wl > 9015:
-                maximum_wl = 9015
-            else:
-                maximum_wl = maximum_wl
-
-            wavelength = np.arange(2315, 9015, 15)
-            spectra_resolution = len(wavelength)
-
-            #Set up the phases
-            tau = phases_dict[i]  
+                t0 = "N/A"
+                    
+            #Save the pure sn spectra metadata to a dictionary
+            pure_sn_spectrum_info = {
+            'Model Type: ': i,
+            'Type': sn_types[np.where(model_names == i)][0],
+            'redshift': redshift,
+            'tau': tau_idx,
+            't0': t0,
+            'SN A_v': sn_a_v,
+            'Standard WL': "Y",
+            "Galactic Source": galactic_source[np.where(model_names == i)[0][0]],
+            'path': str(os.path.join(pure_sn_dir, sn_type_path))}
+            pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
             
-            full_phases = np.arange(-20, 70, 1)
-            model_full_range = len(full_phases)
-            pure_sn_spectra = np.array((sn_spectra_generator(spectra_resolution, model_full_range, salt3_model, full_phases, wavelength)))
-            for tau_idx in tau:
-                sn_type_i = sn_types[np.where(model_names == i)[0][0]]
-
-                if sn_type_i != "Ia":
-                    continue
-
-
-                vals_array = np.zeros(len(host_galaxy_names)*len(extinction_range))
-                hg_type_igx = 0
-
-                single_sn_spectrum = pure_sn_spectra[int(tau_idx - full_phases[0])]
-
-                # Convert the variables to 'double' data type
-                template_wl = template_wl.astype('double')
-                wavelength = wavelength.astype('double')
-                pure_sn_spectrum = single_sn_spectrum.astype('double')
-
-                #Redden the supernova spectra
-                dusty_sn_spectra = extinction.apply(extinction.ccm89(wavelength, a_v=sn_a_v, r_v=r_v), pure_sn_spectrum)
-
-                #Scale up 
-                sn_mean = np.mean(dusty_sn_spectra)
-                norm_sn_spectra = (dusty_sn_spectra / sn_mean * 100)
-
-                #Convert dusty_sn_spectra to 1D array of float 16
-                output_sn_spectra = norm_sn_spectra.astype('float16')
-
-                sn_type_path = ("type_{0}".format(sn_types[np.where(model_names == i)[0][0]]))
-                sn_template_file_name = ('{0}_{1}_{2}_{3}.txt'.format(i, tau_idx, np.round(sn_a_v, 2), np.round(z_igx, 2)))
-
-
-                #Save the wavelength and spectrum to a file
-                output = np.column_stack((wavelength, output_sn_spectra))
-
-                np.savetxt(os.path.join(pure_sn_dir, sn_type_path, sn_template_file_name), output, delimiter=',', fmt='%s')
-
-                #Create the plots of the individual spectra at redshift 0 and E(b-v) 0
-                if np.round(redshift, 2) == 0.0 and np.round(sn_a_v,2) == 0.0:
-                    os.makedirs(os.path.join("python_dir", 'plots', i), exist_ok=True)
-
-                    create_plot([wavelength], [output_sn_spectra], ['Spectra'], '{0} at time = {1}'.format(i, tau_idx), 'Wavelength (Angstroms)', 'Flux', os.path.join("python_dir", 'plots', i), '{0}_{1}'.format(i, tau_idx-tau[0]))
-
-                if tau[0] == 1:
-                    t0 = tau_idx
-                    tau_idx = "N/A"
-                else:
-                    t0 = "N/A"
-                        
-                #Save the pure sn spectra metadata to a dictionary
-                pure_sn_spectrum_info = {
-                'Model Type: ': i,
-                'Type': sn_types[np.where(model_names == i)][0],
-                'redshift': redshift,
-                'tau': tau_idx,
-                't0': t0,
-                'SN A_v': sn_a_v,
-                'Standard WL': "Y",
-                "Galactic Source": galactic_source[np.where(model_names == i)[0][0]],
-                'path': str(os.path.join(pure_sn_dir, sn_type_path))}
-                pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
-                
-                number_of_templates = number_of_templates + 1
+            number_of_templates = number_of_templates + 1
 
 #--------------------------------------------------------Generate the SIREN version of NGSF templates------------------------------------------------------------
 
@@ -483,7 +479,6 @@ if ".DS_Store" in sn_types:
 print(sn_types)
 
 for sn_type in tqdm(sn_types):
-    continue
     #Check to see if the type directory already exists
     if os.path.exists(os.path.join(pure_sn_dir, sn_type)):
         pass
@@ -509,122 +504,16 @@ for sn_type in tqdm(sn_types):
             if ".DS_Store" in sn_type_transient_file:
                 sn_type_transient_files.remove(".DS_Store")
 
-            for a_v in extinction_range:
-                sn_template_wl = deepcopy(template_wl)
-                #Load the file
-                sn_type_transient_data = np.loadtxt(os.path.join('all_templates/sne_superfit', sn_type, sn_type_transients, sn_type_transient_file))
-
-                sn_wl = sn_type_transient_data[:, 0]
-                sn_flux = sn_type_transient_data[:, 1]
-
-                #Trim the spectra to the relevant wavelength range
-                trimmed_sn_spectra = spectres.spectres(sn_template_wl, sn_wl, sn_flux, verbose = False)
-
-                nans = np.isnan(trimmed_sn_spectra)
-                #get the indices where nans are false, where the spectra is within the allowed range
-                not_nans = np.where(~nans)[0]
-                trimmed_sn_spectra = trimmed_sn_spectra[not_nans]
-                sn_template_wl = sn_template_wl[not_nans]
-
-                sn_template_wl = sn_template_wl.astype('double')
-                trimmed_sn_spectra = trimmed_sn_spectra.astype('double')
-
-                #Redden the transient spectra
-                dusty_sn_spectra = extinction.apply(extinction.ccm89(sn_template_wl, a_v=a_v, r_v=r_v), trimmed_sn_spectra)
-
-                sn_mean = np.mean(dusty_sn_spectra)
-                norm_sn_spectra = (dusty_sn_spectra / sn_mean * 100)
-
-                #Convert dusty_sn_spectra to 1D array of float 16
-                output_sn_spectra = norm_sn_spectra.astype('float16')
-
-                try:
-                    sn_type_transient_filename = np.split(sn_type_transient_file, '.')[0]
-                except:
-                    sn_type_transient_filename = sn_type_transient_file
-
-                sn_template_file_name = ('{0}_{1}_{2}.txt'.format(sn_type_transients, sn_type_transient_filename, np.round(a_v, 2)))
-
-                output = np.column_stack((sn_template_wl, output_sn_spectra))
-
-                np.savetxt(os.path.join(pure_sn_dir, sn_type, sn_template_file_name), output, delimiter=',', fmt='%s')
-
-                tau_idx = "N/A" 
-                t0 = "N/A"
-                redshift = 0.0
-
-                #Save the transient spectra metadata to a dictionary
-                pure_sn_spectrum_info = {
-                'Model Type: ': sn_type_transients,
-                'Type': sn_type,
-                'redshift': redshift,
-                'tau': tau_idx,
-                't0': t0,
-                'SN A_v': a_v,
-                'Standard WL': "N",
-                'Galactic Source': "N",
-                'path': str(os.path.join(pure_sn_dir, sn_type))}
-                pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
-
-                number_of_templates = number_of_templates + 1
-
-#------------------------------------------------------Generate the SIREN version of the Supersnid spectra----------------------------------------------------------
-sn_types = os.listdir('all_templates/sne_supersnid')
-#Import the supersnid metadata
-supersnid_metadata = pd.read_csv('all_templates/sne_supersnid/supersnid_metadata.csv')
-print(sn_types)
-
-if ".DS_Store" in sn_types:
-    sn_types.remove(".DS_Store")
-if "unsorted" in sn_types:
-    sn_types.remove("unsorted")
-if "supersnid_metadata.csv" in sn_types:
-    sn_types.remove("supersnid_metadata.csv")
-
-for sn_type in tqdm(sn_types):
-    continue
-    #Check to see if the type directory already exists
-    if os.path.exists(os.path.join(pure_sn_dir, sn_type)):
-        pass
-    else:
-        os.makedirs(os.path.join(pure_sn_dir, sn_type), exist_ok=True)
-
-
-    #Get the names of the files in the directory
-    sn_type_transient_files = os.listdir(os.path.join('all_templates/sne_supersnid', sn_type))
-    if ".DS_Store" in sn_type_transient_files:
-        sn_type_transient_files.remove(".DS_Store")
-    if "supersnid_metadata.csv" in sn_type_transient_files:
-        sn_type_transient_files.remove("supersnid_metadata.csv")
-    
-    for sn_type_transient_file in sn_type_transient_files:
-
-        if ".DS_Store" in sn_type_transient_file:
-            sn_type_transient_files.remove(".DS_Store")
-
-        for a_v in extinction_range:
+            a_v = 0.0
             sn_template_wl = deepcopy(template_wl)
             #Load the file
-            sn_type_transient_data = np.loadtxt(os.path.join('all_templates/sne_supersnid', sn_type, sn_type_transient_file))
+            sn_type_transient_data = np.loadtxt(os.path.join('all_templates/sne_superfit', sn_type, sn_type_transients, sn_type_transient_file))
 
             sn_wl = sn_type_transient_data[:, 0]
             sn_flux = sn_type_transient_data[:, 1]
 
-            #Deredshift the spectra to rest wavelength first getting the redshift from the metadatafile
-            sn_metadata = supersnid_metadata[supersnid_metadata['File Name'] == sn_type_transient_file]
-
-            #Deredshift the spectra to rest wavelength
-            if not sn_metadata.empty:
-                redshift = sn_metadata['Redshift'].values[0]
-                sn_wl = sn_wl / (1 + redshift)
-            else:
-                print(f"Warning: No redshift found for {sn_type_transient_file}. Using redshift 0.0.")
-
-
             #Trim the spectra to the relevant wavelength range
-            print("Bog")
             trimmed_sn_spectra = spectres.spectres(sn_template_wl, sn_wl, sn_flux, verbose = False)
-            print("off")
 
             nans = np.isnan(trimmed_sn_spectra)
             #get the indices where nans are false, where the spectra is within the allowed range
@@ -635,11 +524,10 @@ for sn_type in tqdm(sn_types):
             sn_template_wl = sn_template_wl.astype('double')
             trimmed_sn_spectra = trimmed_sn_spectra.astype('double')
 
-            #Redden the transient spectra
-            dusty_sn_spectra = extinction.apply(extinction.ccm89(sn_template_wl, a_v=a_v, r_v=r_v), trimmed_sn_spectra)
 
-            sn_mean = np.mean(dusty_sn_spectra)
-            norm_sn_spectra = (dusty_sn_spectra / sn_mean * 100)
+
+            sn_mean = np.mean(trimmed_sn_spectra)
+            norm_sn_spectra = (trimmed_sn_spectra / sn_mean * 100)
 
             #Convert dusty_sn_spectra to 1D array of float 16
             output_sn_spectra = norm_sn_spectra.astype('float16')
@@ -649,7 +537,7 @@ for sn_type in tqdm(sn_types):
             except:
                 sn_type_transient_filename = sn_type_transient_file
 
-            sn_template_file_name = ('{0}_{1}.txt'.format(sn_type_transient_filename, np.round(a_v, 2)))
+            sn_template_file_name = ('{0}_{1}.txt'.format(sn_type_transients, sn_type_transient_filename))
 
             output = np.column_stack((sn_template_wl, output_sn_spectra))
 
@@ -674,6 +562,107 @@ for sn_type in tqdm(sn_types):
 
             number_of_templates = number_of_templates + 1
 
+#------------------------------------------------------Generate the SIREN version of the Supersnid spectra----------------------------------------------------------
+sn_types = os.listdir('all_templates/sne_supersnid')
+#Import the supersnid metadata
+supersnid_metadata = pd.read_csv('all_templates/sne_supersnid/supersnid_metadata.csv')
+print(sn_types)
+
+if ".DS_Store" in sn_types:
+    sn_types.remove(".DS_Store")
+if "unsorted" in sn_types:
+    sn_types.remove("unsorted")
+if "supersnid_metadata.csv" in sn_types:
+    sn_types.remove("supersnid_metadata.csv")
+
+for sn_type in tqdm(sn_types):
+
+    #Check to see if the type directory already exists
+    if os.path.exists(os.path.join(pure_sn_dir, sn_type)):
+        pass
+    else:
+        os.makedirs(os.path.join(pure_sn_dir, sn_type), exist_ok=True)
+
+
+    #Get the names of the files in the directory
+    sn_type_transient_files = os.listdir(os.path.join('all_templates/sne_supersnid', sn_type))
+    if ".DS_Store" in sn_type_transient_files:
+        sn_type_transient_files.remove(".DS_Store")
+    if "supersnid_metadata.csv" in sn_type_transient_files:
+        sn_type_transient_files.remove("supersnid_metadata.csv")
+    
+    for sn_type_transient_file in sn_type_transient_files:
+
+        if ".DS_Store" in sn_type_transient_file:
+            sn_type_transient_files.remove(".DS_Store")
+
+        sn_template_wl = deepcopy(template_wl)
+        #Load the file
+        sn_type_transient_data = np.loadtxt(os.path.join('all_templates/sne_supersnid', sn_type, sn_type_transient_file))
+
+        sn_wl = sn_type_transient_data[:, 0]
+        sn_flux = sn_type_transient_data[:, 1]
+
+        #Deredshift the spectra to rest wavelength first getting the redshift from the metadatafile
+        sn_metadata = supersnid_metadata[supersnid_metadata['File Name'] == sn_type_transient_file]
+
+        #Deredshift the spectra to rest wavelength
+        if not sn_metadata.empty:
+            redshift = sn_metadata['Redshift'].values[0]
+            sn_wl = sn_wl / (1 + redshift)
+        else:
+            print(f"Warning: No redshift found for {sn_type_transient_file}. Using redshift 0.0.")
+
+        #Trim the spectra to the relevant wavelength range
+        trimmed_sn_spectra = spectres.spectres(sn_template_wl, sn_wl, sn_flux, verbose = False)
+
+        nans = np.isnan(trimmed_sn_spectra)
+        #get the indices where nans are false, where the spectra is within the allowed range
+        not_nans = np.where(~nans)[0]
+        trimmed_sn_spectra = trimmed_sn_spectra[not_nans]
+        sn_template_wl = sn_template_wl[not_nans]
+
+        sn_template_wl = sn_template_wl.astype('double')
+        trimmed_sn_spectra = trimmed_sn_spectra.astype('double')
+
+
+
+        sn_mean = np.mean(trimmed_sn_spectra)
+        norm_sn_spectra = (trimmed_sn_spectra/ sn_mean * 100)
+
+        #Convert dusty_sn_spectra to 1D array of float 16
+        output_sn_spectra = norm_sn_spectra.astype('float16')
+
+        try:
+            sn_type_transient_filename = np.split(sn_type_transient_file, '.')[0]
+        except:
+            sn_type_transient_filename = sn_type_transient_file
+
+        sn_template_file_name = ('{0}_{1}.txt'.format(sn_type_transient_filename, np.round(a_v, 2)))
+
+        output = np.column_stack((sn_template_wl, output_sn_spectra))
+
+        np.savetxt(os.path.join(pure_sn_dir, sn_type, sn_template_file_name), output, delimiter=',', fmt='%s')
+
+        tau_idx = "N/A" 
+        t0 = "N/A"
+        redshift = 0.0
+
+        #Save the transient spectra metadata to a dictionary
+        pure_sn_spectrum_info = {
+        'Model Type: ': sn_type_transients,
+        'Type': sn_type,
+        'redshift': redshift,
+        'tau': tau_idx,
+        't0': t0,
+        'SN A_v': a_v,
+        'Standard WL': "N",
+        'Galactic Source': "N",
+        'path': str(os.path.join(pure_sn_dir, sn_type))}
+        pure_sn_spectra_dict[sn_template_file_name] = pure_sn_spectrum_info
+
+        number_of_templates = number_of_templates + 1
+
 
 #--------------------------------------------------------Generate the transient spectra------------------------------------------------------------
 
@@ -690,66 +679,62 @@ for i in transient_types:
     os.makedirs(os.path.join(pure_sn_dir, i), exist_ok=True)
 
 for type in tqdm(transient_types):
-    continue
-    for transient_av in extinction_range:
-        transient_names = os.listdir(os.path.join('custom_transients_dir', type))
+    transient_av = 0.0
+    transient_names = os.listdir(os.path.join('custom_transients_dir', type))
 
-        for transient_name in transient_names:
-            if transient_name == '.DS_Store':
-                continue
-            transient_path = os.path.join('custom_transients_dir', type, transient_name)
+    for transient_name in transient_names:
+        if transient_name == '.DS_Store':
+            continue
+        transient_path = os.path.join('custom_transients_dir', type, transient_name)
 
-            data= np.loadtxt(str(transient_path), skiprows=1, delimiter='\t')
-  
-            transient_wl = data[:, 0]
-            transient_flux = data[:, 1]
+        data= np.loadtxt(str(transient_path), skiprows=1, delimiter='\t')
 
-            #Trim the spectra to the relevant wavelength range
-            trimmed_transient_spectra = spectres.spectres(template_wl, transient_wl, transient_flux, verbose = False)
+        transient_wl = data[:, 0]
+        transient_flux = data[:, 1]
 
-            nans = np.isnan(trimmed_transient_spectra)
-            #get the indices where nans are false
-            not_nans = np.where(~nans)[0]
-            trimmed_transient_spectra = trimmed_transient_spectra[not_nans]
-            template_wl = template_wl[not_nans]
+        #Trim the spectra to the relevant wavelength range
+        trimmed_transient_spectra = spectres.spectres(template_wl, transient_wl, transient_flux, verbose = False)
 
-            template_wl = template_wl.astype('double')
-            trimmed_transient_spectra = trimmed_transient_spectra.astype('double')
+        nans = np.isnan(trimmed_transient_spectra)
+        #get the indices where nans are false
+        not_nans = np.where(~nans)[0]
+        trimmed_transient_spectra = trimmed_transient_spectra[not_nans]
+        template_wl = template_wl[not_nans]
 
-            #Redden the transient spectra
-            dusty_transient_spectra = extinction.apply(extinction.ccm89(template_wl, a_v=transient_av, r_v=r_v), trimmed_transient_spectra)
+        template_wl = template_wl.astype('double')
+        trimmed_transient_spectra = trimmed_transient_spectra.astype('double')
+ 
 
-            transient_mean = np.mean(dusty_transient_spectra)
-            norm_transient_spectra = (dusty_transient_spectra / transient_mean * 100)
+        transient_mean = np.mean(trimmed_transient_spectra)
+        norm_transient_spectra = (trimmed_transient_spectra / transient_mean * 100)
 
-            #Convert dusty_transient_spectra to 1D array of float 16
-            output_transient_spectra = norm_transient_spectra.astype('float16')
+        #Convert dusty_transient_spectra to 1D array of float 16
+        output_transient_spectra = norm_transient_spectra.astype('float16')
 
-            transient_template_file_name = ('{0}_{1}_{2}.txt'.format(type, transient_name, np.round(transient_av, 2)))
+        transient_template_file_name = ('{0}_{1}.txt'.format(type, transient_name))
 
-            output = np.column_stack((template_wl, output_transient_spectra))
+        output = np.column_stack((template_wl, output_transient_spectra))
+        
+        np.savetxt(os.path.join(pure_sn_dir, type, transient_template_file_name), output, delimiter=',', fmt='%s')
 
-            
-            np.savetxt(os.path.join(pure_sn_dir, type, transient_template_file_name), output, delimiter=',', fmt='%s')
+        tau_idx = "N/A" 
+        t0 = "N/A"
+        redshift = 0.0
 
-            tau_idx = "N/A" 
-            t0 = "N/A"
-            redshift = 0.0
-
-            #Save the transient spectra metadata to a dictionary
-            pure_sn_spectrum_info = {
-            'Model Type: ': transient_name,
-            'Type': type,
-            'redshift': redshift,
-            'tau': tau_idx,
-            't0': t0,
-            'SN A_v': transient_av,
-            'Standard WL': "N",
-            'Galactic Source': galactic_source[np.where(transient_types == type)[0][0]],
-            'path': str(os.path.join(pure_sn_dir, type))}
-            pure_sn_spectra_dict[transient_template_file_name] = pure_sn_spectrum_info
-            
-            number_of_templates = number_of_templates + 1
+        #Save the transient spectra metadata to a dictionary
+        pure_sn_spectrum_info = {
+        'Model Type: ': transient_name,
+        'Type': type,
+        'redshift': redshift,
+        'tau': tau_idx,
+        't0': t0,
+        'SN A_v': transient_av,
+        'Standard WL': "N",
+        'Galactic Source': galactic_source[np.where(transient_types == type)[0][0]],
+        'path': str(os.path.join(pure_sn_dir, type))}
+        pure_sn_spectra_dict[transient_template_file_name] = pure_sn_spectrum_info
+        
+        number_of_templates = number_of_templates + 1
 
 
 

@@ -33,3 +33,8 @@ all_templates/
 spectra_to_classify/
 SIREN_APP/
 Development/
+julia_dir/
+.DS_Store
+host_template_dir.zip
+transient_template_dir.zip
+.DS_Store

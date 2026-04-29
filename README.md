@@ -1,2 +1,2 @@
-# classifier_engine
-supernova spectroscopic classification engine
+# SIREN - Supernova Identifcation and Redshift ENgine
+SIREN is template based spectroscopic classifier for transients that is written 

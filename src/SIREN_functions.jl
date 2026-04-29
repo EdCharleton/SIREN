@@ -12,7 +12,7 @@ module ClassifierFunctions
     using JSON
     using ProgressBars
     using Pkg
-    using DustExtinction    
+    using DustExtinction: F99, CCM89    
     using BenchmarkTools
     using DataStructures
     using Pkg
@@ -208,6 +208,8 @@ module ClassifierFunctions
     y_lo = quantile(finite_flux, 0.01)
     y_hi = quantile(finite_flux, 0.99) * 1.3
 
+    
+
     # ── Plot ─────────────────────────────────────────────────────────────────
     p = plot(
         size          = (1600, 900),
@@ -224,9 +226,15 @@ module ClassifierFunctions
     )
 
     # 1. Original unbinned spectrum + error ribbon — light grey fill, mid-grey line
+    # In plot_best_fit, replace the obs arrays before plotting:
+    valid_obs   = .!isnan.(obs_flux) .& .!isnan.(obs_err) .& isfinite.(obs_flux)
+    obs_λ_clean   = obs_λ[valid_obs]
+    obs_flux_clean = obs_flux[valid_obs]
+    obs_err_clean  = obs_err[valid_obs]
+
     plot!(p,
-        obs_λ, obs_flux,
-        ribbon    = min.(obs_err, (y_hi - y_lo) * 0.1),
+        obs_λ_clean, obs_flux_clean,
+        ribbon    = min.(obs_err_clean, (y_hi - y_lo) * 0.1),
         fillalpha = 0.15,
         fillcolor = "#C8C8C8",
         linecolor = "#909090",
@@ -842,7 +850,8 @@ function chi_squared_classifier(
         transient_template_λ,   host_template_λ,
         target_spectra,         target_λ,                  target_spectra_σ,
         SN_ID, target_redshift, telluric_λ,
-        batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50)
+        batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50,
+        Rv = 3.1, Av_min= -3.0, Av_max = 3.0)  # ← extinction parameters
 
     # ── Counts and unique types ───────────────────────────────────────────────
     n_transient_templates = length(transient_template_files)
@@ -855,11 +864,11 @@ function chi_squared_classifier(
     # ── Per-type result arrays ────────────────────────────────────────────────
     chi_squared_arr     = fill(1e10, n_types)
     chi_squared_red_arr = fill(1e10, n_types)
-    println(typeof(chi_squared_red_arr))
 
     norm_arr      = zeros(Float32, n_types, 2)
     redshift_vals = zeros(Float32, n_types)
     best_indices  = zeros(Int,     n_types, 2)
+    best_Av_arr   = zeros(Float32, n_types)   # ← stores best-fit Av per type
     contam_array  = Vector{Float32}(undef, n_types)
 
     emission_lines_arr   = Vector{Array}(undef, n_types)
@@ -888,10 +897,15 @@ function chi_squared_classifier(
         working_λ, working_flux, working_flux_σ, telluric_λ, remove_telluric
     )
 
-
     original_target_λ      = deepcopy(working_λ)
     original_target_flux   = deepcopy(working_flux)
     original_target_flux_σ = deepcopy(working_flux_σ)
+
+    # ── Extinction grid — built once, shared across all z iterations ──────────
+    # Av = 0 is always first, guaranteeing the unextincted case is a candidate
+    Av_grid  = collect(Av_min:0.5:Av_max)
+    N_av     = length(Av_grid)
+    ext_law  = F99(Rv = Rv)
 
     # ── Redshift grid ─────────────────────────────────────────────────────────
     redshift_max = if ismissing(target_redshift) || target_redshift == "None"
@@ -900,7 +914,7 @@ function chi_squared_classifier(
         target_redshift > 0.6 ? target_redshift : 0.6
     end
     redshift_range = collect(0.00:0.01:redshift_max)
-
+    
     # ── Main redshift loop ────────────────────────────────────────────────────
     for z in (batch_mode ? redshift_range : ProgressBar(redshift_range))
 
@@ -942,39 +956,39 @@ function chi_squared_classifier(
             if transient_template_info["Galactic Source"][transient_template_names[t_idx]] == "Y"
         )
 
-        # ── Matrix formulation for GPU / Dense Algebra ──────────────────────────
+        # ── Matrix formulation ────────────────────────────────────────────────
         N_lam = length(frozen_flux)
-        N_T = length(transient_templates)
-        N_H = length(host_templates)
-        
-        # Build dense target vectors safely with Double Precision (Float64)
-        target_w = zeros(Float64, N_lam)
-        target_f = zeros(Float64, N_lam)
+        N_T   = length(transient_templates)
+        N_H   = length(host_templates)
+
+        # Build dense target vectors
+        target_w     = zeros(Float64, N_lam)
+        target_f     = zeros(Float64, N_lam)
         target_valid = .!isnan.(frozen_flux) .& .!isnan.(frozen_flux_σ) .& (frozen_flux_σ .> 0)
         target_w[target_valid] .= 1.0 ./ (frozen_flux_σ[target_valid].^2)
         target_f[target_valid] .= frozen_flux[target_valid]
-        
-        T_mat = zeros(Float64, N_lam, N_T)
+
+        T_mat  = zeros(Float64, N_lam, N_T)
         MT_mat = zeros(Float64, N_lam, N_T)
-        H_mat = zeros(Float64, N_lam, N_H)
+        H_mat  = zeros(Float64, N_lam, N_H)
         MH_mat = zeros(Float64, N_lam, N_H)
 
         # Build Host Matrix
         for h_idx in 1:N_H
             if h_idx in non_standard_template_indices
-                common_set = intersect(Set(host_template_λ_z[h_idx]), frozen_λ_set)
+                common_set   = intersect(Set(host_template_λ_z[h_idx]), frozen_λ_set)
                 common_idx_h = findall(in(common_set), host_template_λ_z[h_idx])
                 common_idx_z = findall(in(common_set), frozen_λ)
-                H_mat[common_idx_z, h_idx] .= host_templates[h_idx][common_idx_h]
-                MH_mat[common_idx_z, h_idx] .= 1.0f0
+                H_mat[common_idx_z, h_idx]  .= host_templates[h_idx][common_idx_h]
+                MH_mat[common_idx_z, h_idx] .= 1.0
             else
-                H_mat[:, h_idx] .= host_templates[h_idx]
-                MH_mat[:, h_idx] .= 1.0f0
+                H_mat[:, h_idx]  .= host_templates[h_idx]
+                MH_mat[:, h_idx] .= 1.0
             end
             nan_mask = isnan.(H_mat[:, h_idx])
             if any(nan_mask)
-                H_mat[nan_mask, h_idx] .= 0.0f0
-                MH_mat[nan_mask, h_idx] .= 0.0f0
+                H_mat[nan_mask, h_idx]  .= 0.0
+                MH_mat[nan_mask, h_idx] .= 0.0
             end
         end
 
@@ -990,146 +1004,154 @@ function chi_squared_classifier(
                 end
                 common_idx_t = findall(in(common_set), transient_template_λ_z[t_idx])
                 common_idx_z = findall(in(common_set), frozen_λ)
-                T_mat[common_idx_z, t_idx] .= transient_templates[t_idx][common_idx_t]
-                MT_mat[common_idx_z, t_idx] .= 1.0f0
+                T_mat[common_idx_z, t_idx]  .= transient_templates[t_idx][common_idx_t]
+                MT_mat[common_idx_z, t_idx] .= 1.0
             else
-                T_mat[:, t_idx] .= transient_templates[t_idx]
-                MT_mat[:, t_idx] .= 1.0f0
+                T_mat[:, t_idx]  .= transient_templates[t_idx]
+                MT_mat[:, t_idx] .= 1.0
             end
             nan_mask = isnan.(T_mat[:, t_idx])
             if any(nan_mask)
-                T_mat[nan_mask, t_idx] .= 0.0f0
-                MT_mat[nan_mask, t_idx] .= 0.0f0
+                T_mat[nan_mask, t_idx]  .= 0.0
+                MT_mat[nan_mask, t_idx] .= 0.0
             end
         end
-        
-        # Optional offload to GPU if functional (otherwise native dense matrix runs locally)
-        println("target flux", target_f)
-        Y_gpu  = to_gpu(target_f)
-        W_gpu  = to_gpu(target_w)
-        T_gpu  = to_gpu(T_mat)
-        MT_gpu = to_gpu(MT_mat)
-        H_gpu  = to_gpu(H_mat)
-        MH_gpu = to_gpu(MH_mat)
-        
-        # Prepare components analytically
-        WT = W_gpu .* MT_gpu                  
-        WT_Y = WT .* Y_gpu                    
-        WT_T = WT .* T_gpu                    
-        WT_T2 = WT_T .* T_gpu                 
-        H_clean = H_gpu .* MH_gpu             
 
-        # Executing primary Matrix operations via BLAS GEMM directly inside hardware backend!
-        S_sh = transpose(WT_T) * H_clean      
-        S_os = transpose(WT_T .* Y_gpu) * MH_gpu       
-        S_oh = transpose(WT) * (H_clean .* Y_gpu) 
-        S_ss = transpose(WT_T2) * MH_gpu      
-        S_hh = transpose(WT) * (H_clean .* H_clean) 
-        S_oo = transpose(WT .* (Y_gpu.^2)) * MH_gpu   
-        N_pts = transpose(MT_gpu) * MH_gpu    
+        # Pre-allocate extincted copies once per z step (N_lam is now fixed for
+        # this iteration), then reuse across all Av steps via broadcast-assign
+        T_ext = zeros(Float64, N_lam, N_T)
+        H_ext = zeros(Float64, N_lam, N_H)
 
-        # Mathematical Determinants (protecting from div-by-zero singularities gracefully)
-        det = max.(S_ss .* S_hh .- S_sh.^2, 1e-10) 
-        
-        B = (S_os .* S_hh .- S_oh .* S_sh) ./ det
-        C = (S_oh .* S_ss .- S_os .* S_sh) ./ det
-
-        chi_sq = S_oo .+ B.^2 .* S_ss .+ C.^2 .* S_hh .- 2.0 .* B .* S_os .- 2.0 .* C .* S_oh .+ 2.0 .* B .* C .* S_sh
-        chi_sq_red = chi_sq ./ max.(N_pts, 1.0)
-        
-        # Return exact coefficients matching matrix arrays locally 
-        B_cpu = to_cpu(B)
-        C_cpu = to_cpu(C)
-        chi_sq_red_cpu = to_cpu(chi_sq_red)
-        N_pts_cpu = to_cpu(N_pts)
-        
-        valid_BC = (B_cpu .>= 0.0) .& (C_cpu .>= 0.0) .& (N_pts_cpu .> 0.0)
-        chi_sq_red_cpu[.!valid_BC] .= Inf
-
-        println("==== EXACT DEBUG OUTPUT ====")
-        println("any_valid=", any(valid_BC), " max_B=", maximum(B_cpu), " max_C=", maximum(C_cpu))
-        println("Chi squre= ", minimum(chi_sq_red_cpu))
-        println("min_Npts=", minimum(N_pts_cpu), " max_Npts=", maximum(N_pts_cpu))
-        println("max_Sos=", maximum(to_cpu(S_os)), " max_Soh=", maximum(to_cpu(S_oh)))
-        println("max_Sss=", maximum(to_cpu(S_ss)), " max_Shh=", maximum(to_cpu(S_hh)))
-        println("max_Ssh=", maximum(to_cpu(S_sh)), " max_WT=", maximum(to_cpu(WT)))
-        println("min_det=", minimum(to_cpu(det)))
-        println("============================")
-
+        # type_indices and type_locks are Av-independent so build them once here
         type_indices = [type_to_index[transient_template_info["Type"][transient_template_names[i]]] for i in 1:N_T]
-        type_locks = [ReentrantLock() for _ in 1:n_types]
+        type_locks   = [ReentrantLock() for _ in 1:n_types]
 
-        # Thread-safe assignments since matrix math operates over all variables jointly
-        Threads.@threads for t_idx in 1:N_T
-            t_idx in galactic_transients && z != 0.0 && continue
-            
-            t_type_index = type_indices[t_idx]
-            
-            for h_idx in 1:N_H
-                c_val = chi_sq_red_cpu[t_idx, h_idx]
-                
-                # B and C failed bounds (set to inf) or was worse model fit
-                if c_val >= chi_squared_red_arr[t_type_index]
-                    continue
-                end
-                
-                lock(type_locks[t_type_index]) do
-                    if c_val < chi_squared_red_arr[t_type_index]
-                        
-                        norm_transient = B_cpu[t_idx, h_idx]
-                        norm_host = C_cpu[t_idx, h_idx]
-                        
-                        chi_squared_arr[t_type_index]     = c_val * N_pts_cpu[t_idx, h_idx]
-                        chi_squared_red_arr[t_type_index] = c_val
-                        norm_arr[t_type_index, 1]         = norm_transient
-                        norm_arr[t_type_index, 2]         = norm_host
-                        best_indices[t_type_index, 1]     = t_idx
-                        best_indices[t_type_index, 2]     = h_idx
-                        redshift_vals[t_type_index]       = z
+        # ── Av loop — same BLAS block, different extinction each pass ──────────
+        for (av_idx, Av) in enumerate(Av_grid)
 
-                        # Reconstruct precisely to output metrics
-                        valid_mask = (target_w .> 0) .& (MT_mat[:, t_idx] .> 0) .& (MH_mat[:, h_idx] .> 0)
-                        
-                        b_target_v = target_f[valid_mask]
-                        b_target_σ_v = frozen_flux_σ[valid_mask]
-                        b_transient_v = T_mat[valid_mask, t_idx]
-                        b_host_v = H_mat[valid_mask, h_idx]
-                        b_host_λ = frozen_λ[valid_mask]
-                        
-                        best_f = (b_transient_v .* norm_transient) .+ (b_host_v .* norm_host)
-                        
-                        host_flux_sum = sum(b_host_v .* norm_host)
-                        total_flux = sum(best_f)
-                        contam_array[t_type_index] = (host_flux_sum / total_flux) * 100
+            # Extinction curve at this Av: multiplier in [0,1] per wavelength bin
+            # ext_law.(frozen_λ) returns A(λ)/A(V); units are Angstroms, no conversion needed
+            ext_curve = 10.0 .^ (-0.4 .* Av .* ext_law.(frozen_λ))
 
-                        emission_lines_arr[t_type_index]   = emission_line
-                        emission_lines_λ_arr[t_type_index] = emission_line_λ
+            # Apply identical reddening to both template matrices in-place
+            T_ext .= T_mat .* ext_curve   # broadcast over columns automatically
+            H_ext .= H_mat .* ext_curve
 
-                        binned_spectra_arr[t_type_index]   = binned_flux
-                        binned_λ_arr[t_type_index]         = binned_λ
-                        binned_spectra_σ_arr[t_type_index] = binned_flux_σ
+            # Optional offload to GPU if functional
+            Y_gpu  = to_gpu(target_f)
+            W_gpu  = to_gpu(target_w)
+            T_gpu  = to_gpu(T_ext)
+            MT_gpu = to_gpu(MT_mat)
+            H_gpu  = to_gpu(H_ext)
+            MH_gpu = to_gpu(MH_mat)
 
-                        best_fit_arr[t_type_index]            = collect(best_f)
-                        best_fit_λ_arr[t_type_index]          = collect(b_host_λ)
-                        fitted_spectra_arr[t_type_index]      = collect(b_target_v)
-                        fitted_spectra_σ_arr[t_type_index]    = collect(b_target_σ_v)
-                        fitted_spectra_λ_arr[t_type_index]    = collect(b_host_λ)
-                        transient_component_arr[t_type_index] = collect(b_transient_v .* norm_transient)
-                        host_component_arr[t_type_index]      = collect(b_host_v .* norm_host)
+            # Prepare components analytically
+            WT      = W_gpu .* MT_gpu
+            WT_Y    = WT .* Y_gpu
+            WT_T    = WT .* T_gpu
+            WT_T2   = WT_T .* T_gpu
+            H_clean = H_gpu .* MH_gpu
+
+            # Primary matrix operations via BLAS GEMM
+            S_sh = transpose(WT_T) * H_clean
+            S_os = transpose(WT_T .* Y_gpu) * MH_gpu
+            S_oh = transpose(WT) * (H_clean .* Y_gpu)
+            S_ss = transpose(WT_T2) * MH_gpu
+            S_hh = transpose(WT) * (H_clean .* H_clean)
+            S_oo = transpose(WT .* (Y_gpu.^2)) * MH_gpu
+            N_pts = transpose(MT_gpu) * MH_gpu
+
+            # Solve analytically for B and C
+            det = max.(S_ss .* S_hh .- S_sh.^2, 1e-10)
+
+            B = (S_os .* S_hh .- S_oh .* S_sh) ./ det
+            C = (S_oh .* S_ss .- S_os .* S_sh) ./ det
+
+            chi_sq     = S_oo .+ B.^2 .* S_ss .+ C.^2 .* S_hh .- 2.0 .* B .* S_os .- 2.0 .* C .* S_oh .+ 2.0 .* B .* C .* S_sh
+            chi_sq_red = chi_sq ./ max.(N_pts, 1.0)
+
+            B_cpu          = to_cpu(B)
+            C_cpu          = to_cpu(C)
+            chi_sq_red_cpu = to_cpu(chi_sq_red)
+            N_pts_cpu      = to_cpu(N_pts)
+
+            valid_BC = (B_cpu .>= 0.0) .& (C_cpu .>= 0.0) .& (N_pts_cpu .> 0.0)
+            chi_sq_red_cpu[.!valid_BC] .= Inf
+
+            # Thread-safe best-fit assignment
+            Threads.@threads for t_idx in 1:N_T
+                t_idx in galactic_transients && z != 0.0 && continue
+
+                t_type_index = type_indices[t_idx]
+
+                for h_idx in 1:N_H
+                    c_val = chi_sq_red_cpu[t_idx, h_idx]
+
+                    if c_val >= chi_squared_red_arr[t_type_index]
+                        continue
+                    end
+
+                    lock(type_locks[t_type_index]) do
+                        if c_val < chi_squared_red_arr[t_type_index]
+
+                            norm_transient = B_cpu[t_idx, h_idx]
+                            norm_host      = C_cpu[t_idx, h_idx]
+
+                            chi_squared_arr[t_type_index]     = c_val * N_pts_cpu[t_idx, h_idx]
+                            chi_squared_red_arr[t_type_index] = c_val
+                            norm_arr[t_type_index, 1]         = norm_transient
+                            norm_arr[t_type_index, 2]         = norm_host
+                            best_indices[t_type_index, 1]     = t_idx
+                            best_indices[t_type_index, 2]     = h_idx
+                            best_Av_arr[t_type_index]         = Av   # ← record best Av
+                            redshift_vals[t_type_index]       = z
+
+                            # Reconstruct using extincted templates so stored
+                            # components correctly reflect the reddened fit
+                            valid_mask    = (target_w .> 0) .& (MT_mat[:, t_idx] .> 0) .& (MH_mat[:, h_idx] .> 0)
+
+                            b_target_v    = target_f[valid_mask]
+                            b_target_σ_v  = frozen_flux_σ[valid_mask]
+                            b_transient_v = T_ext[valid_mask, t_idx]   # ← extincted
+                            b_host_v      = H_ext[valid_mask, h_idx]   # ← extincted
+                            b_host_λ      = frozen_λ[valid_mask]
+
+                            best_f = (b_transient_v .* norm_transient) .+ (b_host_v .* norm_host)
+
+                            host_flux_sum = sum(b_host_v .* norm_host)
+                            total_flux    = sum(best_f)
+                            contam_array[t_type_index] = (host_flux_sum / total_flux) * 100
+
+                            emission_lines_arr[t_type_index]   = emission_line
+                            emission_lines_λ_arr[t_type_index] = emission_line_λ
+
+                            binned_spectra_arr[t_type_index]   = binned_flux
+                            binned_λ_arr[t_type_index]         = binned_λ
+                            binned_spectra_σ_arr[t_type_index] = binned_flux_σ
+
+                            best_fit_arr[t_type_index]            = collect(best_f)
+                            best_fit_λ_arr[t_type_index]          = collect(b_host_λ)
+                            fitted_spectra_arr[t_type_index]      = collect(b_target_v)
+                            fitted_spectra_σ_arr[t_type_index]    = collect(b_target_σ_v)
+                            fitted_spectra_λ_arr[t_type_index]    = collect(b_host_λ)
+                            transient_component_arr[t_type_index] = collect(b_transient_v .* norm_transient)
+                            host_component_arr[t_type_index]      = collect(b_host_v .* norm_host)
+                        end
                     end
                 end
             end
-        end
-    end
+
+        end  # ── end Av loop
+    end      # ── end z loop
 
     # ── Collect results ───────────────────────────────────────────────────────
     fitted_type_indices = findall(x -> x != 0, best_indices[:, 1])
 
     top_fit_types    = [transient_template_info["Type"][transient_template_names[i]]    for i in best_indices[fitted_type_indices, 1]]
     top_fit_hg_types = [host_template_info["HG Type"][host_template_names[i]]          for i in best_indices[fitted_type_indices, 2]]
-    top_fit_av       = [transient_template_info["SN A_v"][transient_template_names[i]] for i in best_indices[fitted_type_indices, 1]]
-    top_fit_eb_v     = [av / 3.1 for av in top_fit_av]
-    top_fit_phase    = [transient_template_info["tau"][transient_template_names[i]]    for i in best_indices[fitted_type_indices, 1]]
+    top_fit_av       = [best_Av_arr[i]                                                  for i in fitted_type_indices]  # ← fitted Av, not baked-in
+    top_fit_eb_v     = [av / Rv for av in top_fit_av]
+    top_fit_phase    = [transient_template_info["tau"][transient_template_names[i]]     for i in best_indices[fitted_type_indices, 1]]
 
     best_type_full_idx = argmin(chi_squared_red_arr)
     best_type_idx      = findfirst(==(best_type_full_idx), fitted_type_indices)
@@ -1145,44 +1167,18 @@ function chi_squared_classifier(
         best_type = top_fit_types[best_type_idx]
     end
 
-    savepath = "/Users/chris/Documents/siren_plots"
+    savepath = "/Users/edcharleton/PhD/SIREN/classifications_dir/plots/"
 
     plotpath = show_plot ? plot_best_fit(
-        SN_ID,                          # e.g. "2024abc.fits" or full path
-        best_redshift,                  # Float from redshift_vals[best_type_full_idx]
-
-        # Template index array and metadata
-        best_indices,                   # n_types × 2 Int array of [t_idx, h_idx]
-        transient_template_info,        # OrderedDict with "Type", "tau", "SN A_v", etc.
-        transient_template_names,       # Vector of template filenames
-        host_template_info,             # OrderedDict with "HG Type" etc.
-        host_template_names,            # Vector of host filenames
-
-        # Original unbinned target spectrum (before any processing)
-        original_target_flux,           # Vector{Float32} — raw observed flux
-        original_target_flux_σ,         # Vector{Float32} — raw observed uncertainty
-        original_target_λ,              # Vector{Float32} — raw observed wavelengths
-
-        # Fit results stored per best type
-        best_fit_arr,                   # Vector{Array} — best fit flux per type
-        best_fit_λ_arr,                 # Vector{Array} — wavelengths of best fit
-        transient_component_arr,        # Vector{Array} — transient-only contribution
-        host_component_arr,             # Vector{Array} — host-only contribution
-
-        # Binned + processed spectrum (what was actually fit)
-        fitted_spectra_arr,             # Vector{Array} — binned flux in fit region
-        fitted_spectra_σ_arr,           # Vector{Array} — binned uncertainty in fit region
-        fitted_spectra_λ_arr,           # Vector{Array} — rest-frame λ of fit region
-
-        # Diagnostics
-        chi_squared_red_arr,            # Vector{Float64} — reduced χ² per type
-        redshift_vals,                  # Vector{Float32} — best redshift per type
-
-        # Emission lines that were masked out
-        emission_lines_arr,             # Vector{Array} — masked flux values
-        emission_lines_λ_arr,           # Vector{Array} — masked wavelengths
-
-        savepath                        # String path to save dir, or nothing to display
+        SN_ID, best_redshift,
+        best_indices, transient_template_info, transient_template_names,
+        host_template_info, host_template_names,
+        original_target_flux, original_target_flux_σ, original_target_λ,
+        best_fit_arr, best_fit_λ_arr, transient_component_arr, host_component_arr,
+        fitted_spectra_arr, fitted_spectra_σ_arr, fitted_spectra_λ_arr,
+        chi_squared_red_arr, redshift_vals,
+        emission_lines_arr, emission_lines_λ_arr,
+        savepath
     ) : "No Plot Saved"
 
     return norm_arr, chi_squared_red_arr, plotpath, best_redshift, best_type
