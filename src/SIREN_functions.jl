@@ -866,6 +866,14 @@ function chi_squared_classifier(
         H_master = nothing, MH_master = nothing)
 
     use_prebuilt = !isnothing(T_master)
+    
+    # Pre-upload master matrices to GPU to avoid transfers in the loop
+    if use_prebuilt
+        T_master_gpu  = to_gpu(T_master)
+        MT_master_gpu = to_gpu(MT_master)
+        H_master_gpu  = to_gpu(H_master)
+        MH_master_gpu = to_gpu(MH_master)
+    end
 
     n_transient_templates = length(transient_template_names)
     n_host_templates      = length(host_template_names)
@@ -958,33 +966,38 @@ function chi_squared_classifier(
             H_mat  = H_master[row_start:row_end, :]
             MH_mat = MH_master[row_start:row_end, :]
 
+            T_gpu  = T_master_gpu[row_start:row_end, :]
+            MT_gpu = MT_master_gpu[row_start:row_end, :]
+            H_gpu  = H_master_gpu[row_start:row_end, :]
+            MH_gpu = MH_master_gpu[row_start:row_end, :]
+
             # Zero out galactic transients at z != 0
             if z != 0.0
                 for t_idx in galactic_transients
                     T_mat[:, t_idx]  .= 0.0f0
                     MT_mat[:, t_idx] .= 0.0f0
+                    MT_gpu[:, t_idx] .= 0.0f0
                 end
             end
 
-            # Zero out template rows where the target has no valid data.
-            # This matches the legacy path where trim_nans removed NaN rows,
-            # ensuring N_pts only counts wavelengths with valid target + template data.
+            # Zero out template masks where the target has no valid data.
+            # This ensures N_pts only counts wavelengths with valid target + template data.
+            # target_valid is a boolean mask on CPU.
             invalid_target = .!target_valid
-            T_mat[invalid_target, :]  .= 0.0f0
             MT_mat[invalid_target, :] .= 0.0f0
-            H_mat[invalid_target, :]  .= 0.0f0
             MH_mat[invalid_target, :] .= 0.0f0
+            MT_gpu[invalid_target, :] .= 0.0f0
+            MH_gpu[invalid_target, :] .= 0.0f0
 
             # Compute overlap and exclude templates with insufficient coverage
-            # This matches legacy behavior where templates with < 50% overlap were skipped.
-            # Denominator should be the number of valid target points.
+            # We do this on the GPU masks
             N_target_pts = sum(target_valid)
-            overlap_counts = sum(MT_mat, dims=1) # Count of valid pixels per template
-            insufficient_overlap = (overlap_counts ./ max(N_target_pts, 1)) .< (minimum_overlap / 100)
+            overlap_counts = sum(MT_gpu, dims=1) # 1 x N_T
+            overlap_counts_cpu = to_cpu(overlap_counts)
+            insufficient_overlap = (overlap_counts_cpu ./ max(N_target_pts, 1)) .< (minimum_overlap / 100)
             
-            # We'll apply this mask to T_mat later or just set chi_sq to Inf
-            # Actually, let's pass it to the GPU part via MT_mat
-            MT_mat[:, vec(insufficient_overlap)] .= 0.0f0
+            # Mask out insufficient overlap on GPU
+            MT_gpu[:, vec(insufficient_overlap)] .= 0.0f0
 
             frozen_flux   = target_f # Use the sanitized vectors
             frozen_flux_σ = target_σ_on_grid # Still has NaNs but we use target_w
@@ -1069,10 +1082,13 @@ function chi_squared_classifier(
         # Optional offload to GPU if functional (otherwise native dense matrix runs locally)
         Y_gpu  = to_gpu(target_f)
         W_gpu  = to_gpu(target_w)
-        T_gpu  = to_gpu(T_mat)
-        MT_gpu = to_gpu(MT_mat)
-        H_gpu  = to_gpu(H_mat)
-        MH_gpu = to_gpu(MH_mat)
+        # T_gpu, MT_gpu, H_gpu, MH_gpu are already on device (sliced) or uploaded in slow path
+        if !use_prebuilt
+            T_gpu  = to_gpu(T_mat)
+            MT_gpu = to_gpu(MT_mat)
+            H_gpu  = to_gpu(H_mat)
+            MH_gpu = to_gpu(MH_mat)
+        end
         
         # Prepare components analytically
         WT = W_gpu .* MT_gpu                  
@@ -1100,10 +1116,18 @@ function chi_squared_classifier(
         chi_sq_red = chi_sq ./ max.(N_pts, 1.0f0)
         
         # Return exact coefficients matching matrix arrays locally 
+        # Find best fit for this redshift on the GPU (minimizes data transfer)
+        best_chi_z, best_idx_z = findmin(chi_sq_red)
+        
+        # Pull back results to CPU
         B_cpu = to_cpu(B)
         C_cpu = to_cpu(C)
         chi_sq_red_cpu = to_cpu(chi_sq_red)
         N_pts_cpu = to_cpu(N_pts)
+        
+        # Standardize numerical edge cases
+        chi_sq_red_cpu[isnan.(chi_sq_red_cpu)] .= Inf
+        chi_sq_red_cpu[isinf.(chi_sq_red_cpu)] .= Inf
         
         valid_BC = (B_cpu .>= 0.0) .& (C_cpu .>= 0.0) .& (N_pts_cpu .> 0.0)
         chi_sq_red_cpu[.!valid_BC] .= Inf
