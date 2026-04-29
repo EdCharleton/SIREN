@@ -59,11 +59,20 @@ module ClassifierFunctions
     end
 
     function to_gpu(x)
+        # If it's already on GPU, return as is
+        if (is_cuda_loaded && x isa CUDA.CuArray) || (is_metal_loaded && x isa Metal.MtlArray)
+            return x
+        end
+
         if use_gpu && is_cuda_loaded
             return CUDA.CuArray(x)
         elseif use_gpu && is_metal_loaded
-            # Note: Metal requires Float32. If using Float64, this may fall back to CPU or error.
-            return Metal.MtlArray(x)
+            # Metal requires Float32 for numerical performance, but masks must remain Bool.
+            if eltype(x) == Bool
+                return Metal.MtlArray(x)
+            else
+                return Metal.MtlArray(Float32.(x))
+            end
         else
             return Array(x)
         end
@@ -917,9 +926,9 @@ function chi_squared_classifier(
     original_target_flux_σ = deepcopy(working_flux_σ)
 
     redshift_max = if ismissing(target_redshift) || target_redshift == "None"
-        0.6
+        0.8
     else
-        target_redshift > 0.6 ? target_redshift : 0.6
+        target_redshift > 0.8 ? target_redshift : 0.8
     end
     redshift_range = collect(0.00:0.01:redshift_max)
 
@@ -961,33 +970,22 @@ function chi_squared_classifier(
             target_w[target_valid] .= 1.0f0 ./ Float32.(target_σ_on_grid[target_valid]).^2
             target_f[target_valid] .= Float32.(target_on_grid[target_valid])
 
-            T_mat  = T_master[row_start:row_end, :]
-            MT_mat = MT_master[row_start:row_end, :]
-            H_mat  = H_master[row_start:row_end, :]
-            MH_mat = MH_master[row_start:row_end, :]
-
             T_gpu  = T_master_gpu[row_start:row_end, :]
             MT_gpu = MT_master_gpu[row_start:row_end, :]
             H_gpu  = H_master_gpu[row_start:row_end, :]
             MH_gpu = MH_master_gpu[row_start:row_end, :]
 
-            # Zero out galactic transients at z != 0
+            # Zero out galactic transients at z != 0 on GPU
             if z != 0.0
                 for t_idx in galactic_transients
-                    T_mat[:, t_idx]  .= 0.0f0
-                    MT_mat[:, t_idx] .= 0.0f0
                     MT_gpu[:, t_idx] .= 0.0f0
                 end
             end
 
-            # Zero out template masks where the target has no valid data.
-            # This ensures N_pts only counts wavelengths with valid target + template data.
-            # target_valid is a boolean mask on CPU.
-            invalid_target = .!target_valid
-            MT_mat[invalid_target, :] .= 0.0f0
-            MH_mat[invalid_target, :] .= 0.0f0
-            MT_gpu[invalid_target, :] .= 0.0f0
-            MH_gpu[invalid_target, :] .= 0.0f0
+            # Mask invalid target data on the GPU
+            invalid_target_gpu = to_gpu(.!target_valid)
+            MT_gpu[invalid_target_gpu, :] .= 0.0f0
+            MH_gpu[invalid_target_gpu, :] .= 0.0f0
 
             # Compute overlap and exclude templates with insufficient coverage
             # We do this on the GPU masks
@@ -1164,12 +1162,18 @@ function chi_squared_classifier(
                         redshift_vals[t_type_index]       = z
 
                         # Reconstruct precisely to output metrics
-                        valid_mask = (target_w .> 0) .& (MT_mat[:, t_idx] .> 0) .& (MH_mat[:, h_idx] .> 0)
+                        # Pull back only the specific columns needed from GPU to minimize transfer
+                        MT_col = to_cpu(MT_gpu[:, t_idx])
+                        MH_col = to_cpu(MH_gpu[:, h_idx])
+                        T_col  = to_cpu(T_gpu[:, t_idx])
+                        H_col  = to_cpu(H_gpu[:, h_idx])
+
+                        valid_mask = (target_w .> 0) .& (MT_col .> 0) .& (MH_col .> 0)
                         
                         b_target_v = target_f[valid_mask]
                         b_target_σ_v = frozen_flux_σ[valid_mask]
-                        b_transient_v = T_mat[valid_mask, t_idx]
-                        b_host_v = H_mat[valid_mask, h_idx]
+                        b_transient_v = T_col[valid_mask]
+                        b_host_v = H_col[valid_mask]
                         b_host_λ = frozen_λ[valid_mask]
                         
                         best_f = (b_transient_v .* norm_transient) .+ (b_host_v .* norm_host)

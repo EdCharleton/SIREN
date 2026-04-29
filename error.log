@@ -1,0 +1,58 @@
+0.0%┣                                               ┫ 0/61 [00:00<00:00, -0s/it]
+ERROR: TaskFailedException
+
+    nested task error: BoundsError: attempt to access 256×13164 Metal.MtlMatrix{Float32, Metal.PrivateStorage} at index [Float32[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  …  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1:13164]
+    Stacktrace:
+      [1] throw_boundserror(A::Metal.MtlMatrix{Float32, Metal.PrivateStorage}, I::Tuple{Metal.MtlVector{Float32, Metal.PrivateStorage}, Base.Slice{Base.OneTo{Int64}}})
+        @ Base ./essentials.jl:15
+      [2] checkbounds
+        @ ./abstractarray.jl:699 [inlined]
+      [3] view
+        @ ~/.julia/packages/GPUArrays/DPs2B/src/host/base.jl:361 [inlined]
+      [4] maybeview
+        @ ./views.jl:149 [inlined]
+      [5] dotview(::Metal.MtlMatrix{Float32, Metal.PrivateStorage}, ::Metal.MtlVector{Float32, Metal.PrivateStorage}, ::Function)
+        @ Base.Broadcast ./broadcast.jl:1250
+      [6] chi_squared_classifier(transient_template_info::OrderedCollections.OrderedDict{String, Any}, transient_template_names::Vector{String}, transient_template_files::Vector{Vector{Float64}}, host_template_info::OrderedCollections.OrderedDict{String, Any}, host_template_names::Vector{String}, host_template_files::Vector{Vector{Float64}}, transient_template_λ::Vector{Vector{Float64}}, host_template_λ::Vector{Vector{Float64}}, target_spectra::Vector{Float32}, target_λ::Vector{Float32}, target_spectra_σ::Vector{Float32}, SN_ID::String, target_redshift::Float64, telluric_λ::Matrix{Float64}, batch_mode::Bool, show_plot::Bool, remove_telluric::String, minimum_overlap::Float64; master_grid::Vector{Float32}, T_master::Metal.MtlMatrix{Float32, Metal.PrivateStorage}, MT_master::Metal.MtlMatrix{Float32, Metal.PrivateStorage}, H_master::Metal.MtlMatrix{Float32, Metal.PrivateStorage}, MH_master::Metal.MtlMatrix{Float32, Metal.PrivateStorage})
+        @ Main.SIREN.ClassifierFunctions ~/Documents/SIRENplus/src/SIREN_functions.jl:983
+      [7] macro expansion
+        @ ~/Documents/SIRENplus/src/SIREN.jl:187 [inlined]
+      [8] (::Main.SIREN.var"#SIREN_main##4#SIREN_main##5"{Main.SIREN.var"#SIREN_main##6#SIREN_main##7"{ProgressBars.ProgressBar, ReentrantLock, OrderedCollections.OrderedDict{Any, Any}, Matrix{Float64}, Vector{String}, OrderedCollections.OrderedDict{String, Any}, Vector{String}, OrderedCollections.OrderedDict{String, Any}, Vector{String}}})(tid::Int64; onethread::Bool)
+        @ Main.SIREN ./threadingconstructs.jl:279
+      [9] #SIREN_main##4
+        @ ./threadingconstructs.jl:246 [inlined]
+     [10] (::Base.Threads.var"#threading_run##0#threading_run##1"{Main.SIREN.var"#SIREN_main##4#SIREN_main##5"{Main.SIREN.var"#SIREN_main##6#SIREN_main##7"{ProgressBars.ProgressBar, ReentrantLock, OrderedCollections.OrderedDict{Any, Any}, Matrix{Float64}, Vector{String}, OrderedCollections.OrderedDict{String, Any}, Vector{String}, OrderedCollections.OrderedDict{String, Any}, Vector{String}}}, Int64})()
+        @ Base.Threads ./threadingconstructs.jl:178
+Stacktrace:
+ [1] threading_run(fun::Main.SIREN.var"#SIREN_main##4#SIREN_main##5"{Main.SIREN.var"#SIREN_main##6#SIREN_main##7"{ProgressBars.ProgressBar, ReentrantLock, OrderedCollections.OrderedDict{Any, Any}, Matrix{Float64}, Vector{String}, OrderedCollections.OrderedDict{String, Any}, Vector{String}, OrderedCollections.OrderedDict{String, Any}, Vector{String}}}, static::Bool)
+   @ Base.Threads ./threadingconstructs.jl:199
+ [2] macro expansion
+   @ ./threadingconstructs.jl:216 [inlined]
+ [3] SIREN_main()
+   @ Main.SIREN ~/Documents/SIRENplus/src/SIREN.jl:153
+ [4] julia_main()
+   @ Main.SIREN ~/Documents/SIRENplus/src/SIREN.jl:23
+ [5] top-level scope
+   @ ~/Documents/SIRENplus/src/SIREN.jl:221
+ [6] include(mod::Module, _path::String)
+   @ Base ./Base.jl:306
+ [7] exec_options(opts::Base.JLOptions)
+   @ Base ./client.jl:317
+ [8] _start()
+   @ Base ./client.jl:550
+--- Hardware Setup ---
+CUDA functional: false
+Metal functional: true
+Processing on: Apple Metal GPU
+----------------------
+----------------------------------------------
+Loading in Templates...
+----------------------------------------------
+Loading pre-built template matrices from prebuilt_templates.jld2 ...
+  Loaded & Residing on GPU: T=(447, 13164), H=(447, 66), grid=447 pts
+Loading in Target Spectra...
+----------------------------------------------
+Classifying 1 spectra with 1 threads...
+----------------------------------------------
+Classifying TiDES-SN26aip...
+201
