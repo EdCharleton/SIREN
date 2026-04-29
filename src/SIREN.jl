@@ -33,13 +33,18 @@ function SIREN_main()
     if length(ARGS) > 0
         # Running in command-line mode
         parsed_args = parse_command_line_args()
-        file_path = parsed_args["file_path"]
-        target_redshift = parsed_args["redshift"]
+        file_path = parsed_args["file"]
+        
+        # Handle Redshift: convert to float if not "None"
+        raw_z = parsed_args["redshift"]
+        target_redshift = (raw_z == "None" || raw_z == "none") ? "None" : parse(Float64, raw_z)
+        
         galactic_source = parsed_args["galactic_source"]
         show_plots = parsed_args["make_plot"]
         target_remove_telluric = parsed_args["remove_telluric"]
-        batch_mode = parsed_args["batch_mode"]
+        batch_mode = parsed_args["batch"]
         minimum_overlap = parsed_args["minimum_overlap"]
+        use_gpu_flag = parsed_args["use_gpu"]
     else
         # Running in REPL mode, add your inputs to the below:
         file_path = "/Users/chris/Documents/SIRENplus/TiDES-SN26aip.ascii"
@@ -49,7 +54,11 @@ function SIREN_main()
         galactic_source = "N"
         show_plots = true
         batch_mode = false
+        use_gpu_flag = true
     end
+
+    # Set the global GPU flag in the module
+    ClassifierFunctions.use_gpu = use_gpu_flag
 
     #Set up threading for julia
     ENV["JULIA_NUM_THREADS"] = "auto"
@@ -136,7 +145,7 @@ function SIREN_main()
         end
 
 
-        best_params, chi_red, path, z, type = chi_squared_classifier(
+        @time best_params, chi_red, path, z, type = chi_squared_classifier(
             sn_template_metadata, sn_template_file_names, sn_template_spectra, hg_template_metadata, hg_template_file_names, hg_template_spectra,
             sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift, 
             telluric_mask, batch_mode, show_plots, target_remove_telluric, minimum_overlap)

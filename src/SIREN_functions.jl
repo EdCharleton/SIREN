@@ -29,27 +29,42 @@ module ClassifierFunctions
     #------------------------------------------------------------
     # Hardware-Accelerated Math Setup
     #------------------------------------------------------------
+    # We import at top-level (required by Julia) but check functionality in __init__
+    try; import CUDA; catch; end
+    try; import Metal; catch; end
+
     is_cuda_loaded = false
     is_metal_loaded = false
-    try
-        import CUDA
-        is_cuda_loaded = CUDA.functional()
-    catch
-    end
+    use_gpu = true
 
-    try
-        import Metal
-        is_metal_loaded = Metal.functional()
-    catch
+    function __init__()
+        global is_cuda_loaded, is_metal_loaded
+        
+        # Check functionality at runtime
+        try
+            is_cuda_loaded = CUDA.functional()
+        catch
+        end
+
+        try
+            is_metal_loaded = Metal.functional()
+        catch
+        end
+
+        println("--- Hardware Setup ---")
+        println("CUDA functional: ", is_cuda_loaded)
+        println("Metal functional: ", is_metal_loaded)
+        println("Processing on: ", is_cuda_loaded ? "NVIDIA GPU" : (is_metal_loaded ? "Apple Metal GPU" : "Native Multi-threaded CPU"))
+        println("----------------------")
     end
 
     function to_gpu(x)
-        if is_cuda_loaded
+        if use_gpu && is_cuda_loaded
             return CUDA.CuArray(x)
+        elseif use_gpu && is_metal_loaded
+            # Note: Metal requires Float32. If using Float64, this may fall back to CPU or error.
+            return Metal.MtlArray(x)
         else
-            # Apple Silicon Metal GPUs (M-series) do not have physically integrated FP64 logic blocks.
-            # Thus, we route execution to the native multi-threaded CPU OpenBLAS which executes 
-            # Dense Matrix FP64 perfectly and blazingly fast.
             return Array(x)
         end
     end
@@ -68,21 +83,20 @@ module ClassifierFunctions
         #Get the arguments when running in command line mode
         s = ArgParseSettings()
         @add_arg_table! s begin
-            "file_path"
+            "--file", "-f"
                 help = "Path to the input data file"
                 arg_type = String
                 required = true
             
-            "redshift"
-                help = "Redshift value"
-                arg_type = Float64
+            "--redshift", "-z"
+                help = "Redshift value (or 'None' for search)"
+                arg_type = String
                 required = true
     
-            "batch_mode"
+            "--batch", "-b"
                 help = "Flag to run in batch mode"
                 arg_type = Bool
-                required = true
-                default = false  # Default is 'no'
+                default = false
             
             "--remove_telluric"
                 help = "Flag to remove telluric absorption"
@@ -103,6 +117,11 @@ module ClassifierFunctions
                 help = "Minimum overlap between the target and templates, units of %"
                 arg_type = Float64
                 default = 75  # Default is '0.0'
+
+            "--use_gpu"
+                help = "Flag to enable/disable GPU acceleration"
+                arg_type = Bool
+                default = true
         end
     
         return parse_args(ARGS, s)
@@ -448,11 +467,11 @@ end
     function read_template_files(template_file_names, template_metadata, label)
         println("Loading in $label Spectra...")
         #setup empty matricies to populate with templates
-        flux = Vector{Array{Any}}(undef, length(template_file_names))
-        λ = Vector{Array{Any}}(undef, length(template_file_names))
+        flux = Vector{Vector{Float64}}(undef, length(template_file_names))
+        λ = Vector{Vector{Float64}}(undef, length(template_file_names))
         #masks only present on host galaxy templates (SIREN doesnt fit any host templates with emission lines so they're masked out)
         if label == "Hg Template"
-            mask = Vector{Array{Any}}(undef, length(template_file_names))
+            mask = Vector{Vector{Float64}}(undef, length(template_file_names))
         end
         #Use multithreading to read in the files
         Threads.@threads for i in ProgressBar(eachindex(template_file_names))
@@ -758,9 +777,9 @@ end
             input_spectra_σ
         )
 
-        binned_spectra = deepcopy(output_spectra)
-        binned_spectra_σ = deepcopy(output_spectra_σ)
-        binned_spectra_λ = deepcopy(full_template_λ)
+        binned_spectra = copy(output_spectra)
+        binned_spectra_σ = copy(output_spectra_σ)
+        binned_spectra_λ = copy(full_template_λ)
 
 
 
@@ -789,7 +808,7 @@ end
         # Trim standard templates to the common wavelength range.
         # Non-standard templates are left at their original wavelengths —
         # the classifier handles their trimming individually per target spectrum.
-        output_transient_templates = Array{Any}(undef, length(input_transient_templates))
+        output_transient_templates = Vector{Vector{Float64}}(undef, length(input_transient_templates))
         for i in eachindex(input_transient_templates)
             if i in standard_template_indices
                 output_transient_templates[i] = input_transient_templates[i][template_indicies]
@@ -802,7 +821,7 @@ end
     
         output_host_λ = [input_host_λ[i][template_indicies] for i in eachindex(input_host_λ)]
 
-        output_transient_λ = Array{Any}(undef, length(input_transient_λ))
+        output_transient_λ = Vector{Vector{Float64}}(undef, length(input_transient_λ))
         for λ in eachindex(input_transient_λ)
             if λ in standard_template_indices
                 output_transient_λ[λ] = input_transient_λ[λ][template_indicies]
@@ -855,27 +874,27 @@ function chi_squared_classifier(
     # ── Per-type result arrays ────────────────────────────────────────────────
     chi_squared_arr     = fill(1e10, n_types)
     chi_squared_red_arr = fill(1e10, n_types)
-    println(typeof(chi_squared_red_arr))
+
 
     norm_arr      = zeros(Float32, n_types, 2)
     redshift_vals = zeros(Float32, n_types)
     best_indices  = zeros(Int,     n_types, 2)
     contam_array  = Vector{Float32}(undef, n_types)
 
-    emission_lines_arr   = Vector{Array}(undef, n_types)
-    emission_lines_λ_arr = Vector{Array}(undef, n_types)
+    emission_lines_arr   = Vector{Vector{Float64}}(undef, n_types)
+    emission_lines_λ_arr = Vector{Vector{Float64}}(undef, n_types)
 
-    binned_spectra_arr   = Vector{Array}(undef, n_types)
-    binned_λ_arr         = Vector{Array}(undef, n_types)
-    binned_spectra_σ_arr = Vector{Array}(undef, n_types)
+    binned_spectra_arr   = Vector{Vector{Float64}}(undef, n_types)
+    binned_λ_arr         = Vector{Vector{Float64}}(undef, n_types)
+    binned_spectra_σ_arr = Vector{Vector{Float64}}(undef, n_types)
 
-    best_fit_arr            = Vector{Array}(undef, n_types)
-    best_fit_λ_arr          = Vector{Array}(undef, n_types)
-    transient_component_arr = Vector{Array}(undef, n_types)
-    host_component_arr      = Vector{Array}(undef, n_types)
-    fitted_spectra_arr      = Vector{Array}(undef, n_types)
-    fitted_spectra_σ_arr    = Vector{Array}(undef, n_types)
-    fitted_spectra_λ_arr    = Vector{Array}(undef, n_types)
+    best_fit_arr            = Vector{Vector{Float64}}(undef, n_types)
+    best_fit_λ_arr          = Vector{Vector{Float64}}(undef, n_types)
+    transient_component_arr = Vector{Vector{Float64}}(undef, n_types)
+    host_component_arr      = Vector{Vector{Float64}}(undef, n_types)
+    fitted_spectra_arr      = Vector{Vector{Float64}}(undef, n_types)
+    fitted_spectra_σ_arr    = Vector{Vector{Float64}}(undef, n_types)
+    fitted_spectra_λ_arr    = Vector{Vector{Float64}}(undef, n_types)
 
     # ── Working copies of the target spectrum ─────────────────────────────────
     working_flux    = deepcopy(target_spectra)
@@ -908,18 +927,15 @@ function chi_squared_classifier(
             round(z, digits=2) != round(target_redshift, digits=2) && continue
         end
 
-        redshifted_flux   = deepcopy(cleaned_flux)
-        redshifted_flux_σ = deepcopy(cleaned_flux_σ)
-        redshifted_λ      = deepcopy(cleaned_λ)
-
+        # redshift_spectra creates all new arrays internally, no need to copy inputs
         redshifted_flux, redshifted_flux_σ, redshifted_λ,
         transient_templates, host_templates,
         transient_template_λ_z, host_template_λ_z,
         standard_template_indices, non_standard_template_indices,
         binned_flux, binned_flux_σ, binned_λ = redshift_spectra(
-            redshifted_λ,
-            redshifted_flux,
-            redshifted_flux_σ,
+            cleaned_λ,
+            cleaned_flux,
+            cleaned_flux_σ,
             transient_template_files,
             transient_template_λ,
             transient_template_info,
@@ -930,10 +946,10 @@ function chi_squared_classifier(
             original_λ
         )
 
-        # Frozen copies for the inner template loops
-        frozen_flux   = deepcopy(redshifted_flux)
-        frozen_flux_σ = deepcopy(redshifted_flux_σ)
-        frozen_λ      = deepcopy(redshifted_λ)
+        # Use the returned arrays directly (they are fresh from redshift_spectra)
+        frozen_flux   = redshifted_flux
+        frozen_flux_σ = redshifted_flux_σ
+        frozen_λ      = redshifted_λ
         frozen_λ_set  = Set(frozen_λ)
 
         # Transient templates flagged as galactic sources are only used at z = 0
@@ -947,17 +963,17 @@ function chi_squared_classifier(
         N_T = length(transient_templates)
         N_H = length(host_templates)
         
-        # Build dense target vectors safely with Double Precision (Float64)
-        target_w = zeros(Float64, N_lam)
-        target_f = zeros(Float64, N_lam)
+        # Build dense target vectors safely with Single Precision (Float32)
+        target_w = zeros(Float32, N_lam)
+        target_f = zeros(Float32, N_lam)
         target_valid = .!isnan.(frozen_flux) .& .!isnan.(frozen_flux_σ) .& (frozen_flux_σ .> 0)
-        target_w[target_valid] .= 1.0 ./ (frozen_flux_σ[target_valid].^2)
+        target_w[target_valid] .= 1.0f0 ./ (frozen_flux_σ[target_valid].^2)
         target_f[target_valid] .= frozen_flux[target_valid]
         
-        T_mat = zeros(Float64, N_lam, N_T)
-        MT_mat = zeros(Float64, N_lam, N_T)
-        H_mat = zeros(Float64, N_lam, N_H)
-        MH_mat = zeros(Float64, N_lam, N_H)
+        T_mat = zeros(Float32, N_lam, N_T)
+        MT_mat = zeros(Float32, N_lam, N_T)
+        H_mat = zeros(Float32, N_lam, N_H)
+        MH_mat = zeros(Float32, N_lam, N_H)
 
         # Build Host Matrix
         for h_idx in 1:N_H
@@ -1004,7 +1020,6 @@ function chi_squared_classifier(
         end
         
         # Optional offload to GPU if functional (otherwise native dense matrix runs locally)
-        println("target flux", target_f)
         Y_gpu  = to_gpu(target_f)
         W_gpu  = to_gpu(target_w)
         T_gpu  = to_gpu(T_mat)
@@ -1029,13 +1044,13 @@ function chi_squared_classifier(
         N_pts = transpose(MT_gpu) * MH_gpu    
 
         # Mathematical Determinants (protecting from div-by-zero singularities gracefully)
-        det = max.(S_ss .* S_hh .- S_sh.^2, 1e-10) 
+        det = max.(S_ss .* S_hh .- S_sh.^2, 1f-10) 
         
         B = (S_os .* S_hh .- S_oh .* S_sh) ./ det
         C = (S_oh .* S_ss .- S_os .* S_sh) ./ det
 
-        chi_sq = S_oo .+ B.^2 .* S_ss .+ C.^2 .* S_hh .- 2.0 .* B .* S_os .- 2.0 .* C .* S_oh .+ 2.0 .* B .* C .* S_sh
-        chi_sq_red = chi_sq ./ max.(N_pts, 1.0)
+        chi_sq = S_oo .+ B.^2 .* S_ss .+ C.^2 .* S_hh .- 2.0f0 .* B .* S_os .- 2.0f0 .* C .* S_oh .+ 2.0f0 .* B .* C .* S_sh
+        chi_sq_red = chi_sq ./ max.(N_pts, 1.0f0)
         
         # Return exact coefficients matching matrix arrays locally 
         B_cpu = to_cpu(B)
@@ -1045,16 +1060,6 @@ function chi_squared_classifier(
         
         valid_BC = (B_cpu .>= 0.0) .& (C_cpu .>= 0.0) .& (N_pts_cpu .> 0.0)
         chi_sq_red_cpu[.!valid_BC] .= Inf
-
-        println("==== EXACT DEBUG OUTPUT ====")
-        println("any_valid=", any(valid_BC), " max_B=", maximum(B_cpu), " max_C=", maximum(C_cpu))
-        println("Chi squre= ", minimum(chi_sq_red_cpu))
-        println("min_Npts=", minimum(N_pts_cpu), " max_Npts=", maximum(N_pts_cpu))
-        println("max_Sos=", maximum(to_cpu(S_os)), " max_Soh=", maximum(to_cpu(S_oh)))
-        println("max_Sss=", maximum(to_cpu(S_ss)), " max_Shh=", maximum(to_cpu(S_hh)))
-        println("max_Ssh=", maximum(to_cpu(S_sh)), " max_WT=", maximum(to_cpu(WT)))
-        println("min_det=", minimum(to_cpu(det)))
-        println("============================")
 
         type_indices = [type_to_index[transient_template_info["Type"][transient_template_names[i]]] for i in 1:N_T]
         type_locks = [ReentrantLock() for _ in 1:n_types]
@@ -1102,20 +1107,20 @@ function chi_squared_classifier(
                         total_flux = sum(best_f)
                         contam_array[t_type_index] = (host_flux_sum / total_flux) * 100
 
-                        emission_lines_arr[t_type_index]   = emission_line
-                        emission_lines_λ_arr[t_type_index] = emission_line_λ
+                        emission_lines_arr[t_type_index]   = collect(Float64, emission_line)
+                        emission_lines_λ_arr[t_type_index] = collect(Float64, emission_line_λ)
 
-                        binned_spectra_arr[t_type_index]   = binned_flux
-                        binned_λ_arr[t_type_index]         = binned_λ
-                        binned_spectra_σ_arr[t_type_index] = binned_flux_σ
+                        binned_spectra_arr[t_type_index]   = collect(Float64, binned_flux)
+                        binned_λ_arr[t_type_index]         = collect(Float64, binned_λ)
+                        binned_spectra_σ_arr[t_type_index] = collect(Float64, binned_flux_σ)
 
-                        best_fit_arr[t_type_index]            = collect(best_f)
-                        best_fit_λ_arr[t_type_index]          = collect(b_host_λ)
-                        fitted_spectra_arr[t_type_index]      = collect(b_target_v)
-                        fitted_spectra_σ_arr[t_type_index]    = collect(b_target_σ_v)
-                        fitted_spectra_λ_arr[t_type_index]    = collect(b_host_λ)
-                        transient_component_arr[t_type_index] = collect(b_transient_v .* norm_transient)
-                        host_component_arr[t_type_index]      = collect(b_host_v .* norm_host)
+                        best_fit_arr[t_type_index]            = collect(Float64, best_f)
+                        best_fit_λ_arr[t_type_index]          = collect(Float64, b_host_λ)
+                        fitted_spectra_arr[t_type_index]      = collect(Float64, b_target_v)
+                        fitted_spectra_σ_arr[t_type_index]    = collect(Float64, b_target_σ_v)
+                        fitted_spectra_λ_arr[t_type_index]    = collect(Float64, b_host_λ)
+                        transient_component_arr[t_type_index] = collect(Float64, b_transient_v .* norm_transient)
+                        host_component_arr[t_type_index]      = collect(Float64, b_host_v .* norm_host)
                     end
                 end
             end
