@@ -15,6 +15,7 @@ using LsqFit
 using LaTeXStrings
 using CSV
 using DataStructures: OrderedDict
+using JLD2
 
 #The function used to call the main function and is necessary for PackageCompiler
 function julia_main()::Cint
@@ -92,9 +93,36 @@ function SIREN_main()
     #Import the telluric mask where there is atmospheric absorption
     telluric_mask = readdlm(joinpath("src", "metadata", "tellurics.txt"))
 
-    #Read in the templates of both host and supernova/transient wavlengths and spectra
-    sn_template_wavs, sn_template_spectra = read_template_files(sn_template_file_names, sn_template_metadata, "Supernova Template")
-    hg_template_wavs, hg_template_spectra, hg_template_mask = read_template_files(hg_template_file_names, hg_template_metadata, "Hg Template")
+    # Load pre-built master matrices if available
+    prebuilt_path = joinpath("prebuilt_templates.jld2")
+    if isfile(prebuilt_path)
+        println("Loading pre-built template matrices from $prebuilt_path ...")
+        prebuilt = load(prebuilt_path)
+        master_grid = prebuilt["master_grid"]
+        T_master    = prebuilt["T_master"]
+        MT_master   = prebuilt["MT_master"]
+        H_master    = prebuilt["H_master"]
+        MH_master   = prebuilt["MH_master"]
+        println("  Loaded: T=$(size(T_master)), H=$(size(H_master)), grid=$(length(master_grid)) pts")
+        
+        # Skip loading individual template files to save time/memory
+        sn_template_wavs = Vector{Vector{Float64}}()
+        sn_template_spectra = Vector{Vector{Float64}}()
+        hg_template_wavs = Vector{Vector{Float64}}()
+        hg_template_spectra = Vector{Vector{Float64}}()
+    else
+        println("No pre-built templates found at $prebuilt_path — using legacy CSV loading.")
+        println("Run 'julia --project=. src/prebuild_templates.jl' to generate for faster classification.")
+        master_grid = nothing
+        T_master = nothing
+        MT_master = nothing
+        H_master = nothing
+        MH_master = nothing
+
+        # Read in the templates of both host and supernova/transient wavlengths and spectra
+        sn_template_wavs, sn_template_spectra = read_template_files(sn_template_file_names, sn_template_metadata, "Supernova Template")
+        hg_template_wavs, hg_template_spectra, hg_template_mask = read_template_files(hg_template_file_names, hg_template_metadata, "Hg Template")
+    end
 
     #read in target spectra
     if batch_mode == true
@@ -148,7 +176,9 @@ function SIREN_main()
         @time best_params, chi_red, path, z, type = chi_squared_classifier(
             sn_template_metadata, sn_template_file_names, sn_template_spectra, hg_template_metadata, hg_template_file_names, hg_template_spectra,
             sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift, 
-            telluric_mask, batch_mode, show_plots, target_remove_telluric, minimum_overlap)
+            telluric_mask, batch_mode, show_plots, target_remove_telluric, minimum_overlap;
+            master_grid=master_grid, T_master=T_master, MT_master=MT_master,
+            H_master=H_master, MH_master=MH_master)
 
         #Output the results of the best matching classification to the console as well as the location of the plot
         if batch_mode == false
