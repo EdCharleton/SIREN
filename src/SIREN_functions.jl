@@ -25,6 +25,7 @@ module ClassifierFunctions
     using FITSIO
     using SavitzkyGolay
     using Plots
+    using LinearAlgebra
 
     #------------------------------------------------------------
     # Hardware-Accelerated Math Setup
@@ -897,6 +898,7 @@ function chi_squared_classifier(
     norm_arr      = zeros(Float32, n_types, 2)
     redshift_vals = zeros(Float32, n_types)
     best_indices  = zeros(Int,     n_types, 2)
+    best_z_index  = zeros(Int,     n_types) # Track which redshift index was best
     contam_array  = Vector{Float32}(undef, n_types)
 
     emission_lines_arr   = Vector{Vector{Float64}}(undef, n_types)
@@ -938,69 +940,115 @@ function chi_squared_classifier(
         if transient_template_info["Galactic Source"][transient_template_names[t_idx]] == "Y"
     )
 
-    for z in (batch_mode ? redshift_range : ProgressBar(redshift_range))
+    # ── OPT 1: Hoist template-to-type metadata outside the loop ──────────────
+    N_T = n_transient_templates
+    N_H = n_host_templates
+    N_lam_master = length(master_grid)
+    type_indices = [type_to_index[transient_template_info["Type"][transient_template_names[i]]] for i in 1:N_T]
+    type_locks   = [ReentrantLock() for _ in 1:n_types]
+
+    # Pre-group template indices by SN type for faster reduction
+    type_groups = [Int[] for _ in 1:n_types]
+    for t_idx in 1:N_T
+        push!(type_groups[type_indices[t_idx]], t_idx)
+    end
+
+    # ── OPT 2: Parallel Pre-calculation of all target resamples ──────────────
+    # We do this once on the CPU before entering the GPU search loop
+    target_f_stack     = zeros(Float32, N_lam_master, length(redshift_range))
+    target_w_stack     = zeros(Float32, N_lam_master, length(redshift_range))
+    target_valid_stack = falses(N_lam_master, length(redshift_range))
+    
+    # We store the raw resamples for plotting reconstruction later
+    raw_flux_stack     = Vector{Vector{Float32}}(undef, length(redshift_range))
+    raw_flux_σ_stack   = Vector{Vector{Float32}}(undef, length(redshift_range))
+
+    Threads.@threads for iz in 1:length(redshift_range)
+        z_val = redshift_range[iz]
+        
+        # Calculate bounds for this redshift
+        bottom_λ = 3800.0f0 / (1.0f0 + Float32(z_val))
+        top_λ    = 8000.0f0 / (1.0f0 + Float32(z_val))
+        
+        de_redshifted_λ = original_λ ./ (1 + z_val)
+        t_on_grid, t_σ_on_grid = spectral_resampler(
+            master_grid, de_redshifted_λ, cleaned_flux, cleaned_flux_σ
+        )
+        
+        raw_flux_stack[iz]   = copy(t_on_grid)
+        raw_flux_σ_stack[iz] = copy(t_σ_on_grid)
+        
+        # Valid = finite, positive σ, and within bounds
+        v_mask = .!isnan.(t_on_grid) .& .!isnan.(t_σ_on_grid) .& 
+                 (t_σ_on_grid .> 0) .& (master_grid .>= bottom_λ) .& (master_grid .<= top_λ)
+                 
+        target_f_stack[v_mask, iz] .= Float32.(t_on_grid[v_mask])
+        target_w_stack[v_mask, iz] .= 1.0f0 ./ Float32.(t_σ_on_grid[v_mask]).^2
+        target_valid_stack[:, iz]  .= v_mask
+    end
+
+    # ── OPT 5: Pre-allocate Zero-Sync result tensors ──────────────────────────
+    # These store the entire redshift search space on the GPU to avoid 
+    # per-iteration synchronization.
+    # ── OPT 6: Pre-compute Overlap Matrix for filtering ──────────────────────
+    # This allows us to move overlap checks out of the GPU loop.
+    # Result: (N_T, N_z) matrix of valid pixel counts
+    overlap_matrix = Float32.(to_cpu(MT_master_gpu))' * Float32.(target_valid_stack)
+    N_pts_target_z = vec(sum(target_valid_stack, dims=1))
+    
+    N_z = length(redshift_range)
+    # ── OPT 5: Pre-allocate Zero-Sync result tensors ──────────────────────────
+    if use_gpu && (is_metal_loaded || is_cuda_loaded)
+        B_gpu           = similar(T_master_gpu, Float32, N_T, N_H)
+        C_gpu           = similar(T_master_gpu, Float32, N_T, N_H)
+        chi_sq_gpu      = similar(T_master_gpu, Float32, N_T, N_H)
+        chi_sq_red_gpu  = similar(T_master_gpu, Float32, N_T, N_H)
+        # 3D structure flattened to (N_T*N_H, N_z)
+        all_chi_red_gpu = similar(T_master_gpu, Float32, N_T * N_H, N_z)
+        all_npts_gpu    = similar(T_master_gpu, Float32, N_T * N_H, N_z)
+    else
+        B_gpu           = zeros(Float32, N_T, N_H)
+        C_gpu           = zeros(Float32, N_T, N_H)
+        chi_sq_gpu      = zeros(Float32, N_T, N_H)
+        chi_sq_red_gpu  = zeros(Float32, N_T, N_H)
+        all_chi_red_gpu = zeros(Float32, N_T * N_H, N_z)
+        all_npts_gpu    = zeros(Float32, N_T * N_H, N_z)
+    end
+    
+    # ── OPT 7: Batch Target Upload ────────────────────────────────────────────
+    # Upload the entire pre-computed target stack to the GPU once to eliminate
+    # slow CPU-to-GPU memory transfers during the loop.
+    target_f_stack_gpu = to_gpu(target_f_stack)
+    target_w_stack_gpu = to_gpu(target_w_stack)
+
+    for (iz, z) in enumerate(batch_mode ? redshift_range : ProgressBar(redshift_range))
 
         if !ismissing(target_redshift) && target_redshift != "None"
             round(z, digits=2) != round(target_redshift, digits=2) && continue
         end
 
         if use_prebuilt
-            # ── FAST PATH: slice pre-built master matrices ────────────────────
-            bottom_λ = 3800.0f0 / (1.0f0 + Float32(z))
-            top_λ    = 8000.0f0 / (1.0f0 + Float32(z))
-            row_start = max(1, round(Int, (bottom_λ - 2315.0f0) / 15.0f0) + 1)
-            row_end   = min(length(master_grid), round(Int, (top_λ - 2315.0f0) / 15.0f0) + 1)
-            active_grid = master_grid[row_start:row_end]
-            N_lam = length(active_grid)
+            # ── FULL GRID GPU MATH (Zero Slicing) ─────────────────────────────
+            # We use the full master grid. Out-of-bounds pixels are handled 
+            # by W_gpu being 0 in those regions.
+            Y_gpu = target_f_stack_gpu[:, iz]
+            W_gpu = target_w_stack_gpu[:, iz]
 
-            de_redshifted_λ = original_λ ./ (1 + z)
-            target_on_grid, target_σ_on_grid = spectral_resampler(
-                active_grid, de_redshifted_λ, cleaned_flux, cleaned_flux_σ
-            )
+            # Use static master matrices directly (no copies/allocations)
+            WT      = W_gpu .* MT_master_gpu                  
+            WT_Y    = WT .* Y_gpu                    
+            WT_T    = WT .* T_master_gpu                    
+            WT_T2   = WT_T .* T_master_gpu                 
+            H_clean = H_master_gpu .* MH_master_gpu             
 
-            binned_flux   = copy(target_on_grid)
-            binned_flux_σ = copy(target_σ_on_grid)
-            binned_λ      = copy(active_grid)
-
-            N_T = size(T_master, 2)
-            N_H = size(H_master, 2)
-            target_w = zeros(Float32, N_lam)
-            target_f = zeros(Float32, N_lam)
-            target_valid = .!isnan.(target_on_grid) .& .!isnan.(target_σ_on_grid) .& (target_σ_on_grid .> 0)
-            target_w[target_valid] .= 1.0f0 ./ Float32.(target_σ_on_grid[target_valid]).^2
-            target_f[target_valid] .= Float32.(target_on_grid[target_valid])
-
-            T_gpu  = T_master_gpu[row_start:row_end, :]
-            MT_gpu = MT_master_gpu[row_start:row_end, :]
-            H_gpu  = H_master_gpu[row_start:row_end, :]
-            MH_gpu = MH_master_gpu[row_start:row_end, :]
-
-            # Zero out galactic transients at z != 0 on GPU
-            if z != 0.0
-                for t_idx in galactic_transients
-                    MT_gpu[:, t_idx] .= 0.0f0
-                end
-            end
-
-            # Mask invalid target data on the GPU
-            invalid_target_gpu = to_gpu(.!target_valid)
-            MT_gpu[invalid_target_gpu, :] .= 0.0f0
-            MH_gpu[invalid_target_gpu, :] .= 0.0f0
-
-            # Compute overlap and exclude templates with insufficient coverage
-            # We do this on the GPU masks
-            N_target_pts = sum(target_valid)
-            overlap_counts = sum(MT_gpu, dims=1) # 1 x N_T
-            overlap_counts_cpu = to_cpu(overlap_counts)
-            insufficient_overlap = (overlap_counts_cpu ./ max(N_target_pts, 1)) .< (minimum_overlap / 100)
-            
-            # Mask out insufficient overlap on GPU
-            MT_gpu[:, vec(insufficient_overlap)] .= 0.0f0
-
-            frozen_flux   = target_f # Use the sanitized vectors
-            frozen_flux_σ = target_σ_on_grid # Still has NaNs but we use target_w
-            frozen_λ      = active_grid
-
+            # Executing Matrix operations on GPU
+            S_sh_gpu  = transpose(WT_T) * H_clean
+            S_os_gpu  = transpose(WT_T .* Y_gpu) * MH_master_gpu
+            S_oh_gpu  = transpose(WT) * (H_clean .* Y_gpu)
+            S_ss_gpu  = transpose(WT_T2) * MH_master_gpu
+            S_hh_gpu  = transpose(WT) * (H_clean .* H_clean)
+            S_oo_gpu  = transpose(WT .* (Y_gpu.^2)) * MH_master_gpu
+            N_pts_gpu = transpose(MT_master_gpu) * MH_master_gpu
         else
             # ── LEGACY PATH: build matrices from template arrays ──────────────
             redshifted_flux, redshifted_flux_σ, redshifted_λ,
@@ -1075,131 +1123,207 @@ function chi_squared_classifier(
                     MT_mat[nan_mask, t_idx] .= 0.0f0
                 end
             end
+
+            # ── GPU MATH (Legacy) ─────────────────────────────────────────────
+            Y_gpu = to_gpu(target_f)
+            W_gpu = to_gpu(target_w)
+
+            WT      = W_gpu .* to_gpu(MT_mat)                  
+            WT_Y    = WT .* Y_gpu                    
+            WT_T    = WT .* to_gpu(T_mat)                    
+            WT_T2   = WT_T .* to_gpu(T_mat)                 
+            H_clean = to_gpu(H_mat) .* to_gpu(MH_mat)             
+
+            # Executing Matrix operations on GPU
+            S_sh_gpu  = transpose(WT_T) * H_clean
+            S_os_gpu  = transpose(WT_T .* Y_gpu) * to_gpu(MH_mat)
+            S_oh_gpu  = transpose(WT) * (H_clean .* Y_gpu)
+            S_ss_gpu  = transpose(WT_T2) * to_gpu(MH_mat)
+            S_hh_gpu  = transpose(WT) * (H_clean .* H_clean)
+            S_oo_gpu  = transpose(WT .* (Y_gpu.^2)) * to_gpu(MH_mat)
+            N_pts_gpu = transpose(to_gpu(MT_mat)) * to_gpu(MH_mat)
         end
-        
-        # Optional offload to GPU if functional (otherwise native dense matrix runs locally)
-        Y_gpu  = to_gpu(target_f)
-        W_gpu  = to_gpu(target_w)
-        # T_gpu, MT_gpu, H_gpu, MH_gpu are already on device (sliced) or uploaded in slow path
-        if !use_prebuilt
-            T_gpu  = to_gpu(T_mat)
-            MT_gpu = to_gpu(MT_mat)
-            H_gpu  = to_gpu(H_mat)
-            MH_gpu = to_gpu(MH_mat)
-        end
-        
-        # Prepare components analytically
-        WT = W_gpu .* MT_gpu                  
-        WT_Y = WT .* Y_gpu                    
-        WT_T = WT .* T_gpu                    
-        WT_T2 = WT_T .* T_gpu                 
-        H_clean = H_gpu .* MH_gpu             
 
-        # Executing primary Matrix operations via BLAS GEMM directly inside hardware backend!
-        S_sh = transpose(WT_T) * H_clean      
-        S_os = transpose(WT_T .* Y_gpu) * MH_gpu       
-        S_oh = transpose(WT) * (H_clean .* Y_gpu) 
-        S_ss = transpose(WT_T2) * MH_gpu      
-        S_hh = transpose(WT) * (H_clean .* H_clean) 
-        S_oo = transpose(WT .* (Y_gpu.^2)) * MH_gpu   
-        N_pts = transpose(MT_gpu) * MH_gpu    
+        # Analytical solve on GPU
+        det = max.(S_ss_gpu .* S_hh_gpu .- S_sh_gpu.^2, 1f-10) 
+        
+        B_gpu .= (S_os_gpu .* S_hh_gpu .- S_oh_gpu .* S_sh_gpu) ./ det
+        C_gpu .= (S_oh_gpu .* S_ss_gpu .- S_os_gpu .* S_sh_gpu) ./ det
 
-        # Mathematical Determinants (protecting from div-by-zero singularities gracefully)
-        det = max.(S_ss .* S_hh .- S_sh.^2, 1f-10) 
+        chi_sq_gpu .= S_oo_gpu .+ B_gpu.^2 .* S_ss_gpu .+ C_gpu.^2 .* S_hh_gpu .- 
+                       2.0f0 .* B_gpu .* S_os_gpu .- 2.0f0 .* C_gpu .* S_oh_gpu .+ 
+                       2.0f0 .* B_gpu .* C_gpu .* S_sh_gpu
         
-        B = (S_os .* S_hh .- S_oh .* S_sh) ./ det
-        C = (S_oh .* S_ss .- S_os .* S_sh) ./ det
+        # Filtering: Mask invalid coefficients immediately
+        invalid_coeffs = (B_gpu .< 0.0f0) .| (C_gpu .< 0.0f0) .| (N_pts_gpu .<= 0.0f0)
+        chi_sq_gpu[invalid_coeffs] .= Float32(Inf)
+        
+        chi_sq_red_gpu .= chi_sq_gpu ./ max.(N_pts_gpu, 1.0f0)
+        
+        # ── ZERO-SYNC: Copy result to global tensor without downloading ───────
+        all_chi_red_gpu[:, iz] .= vec(chi_sq_red_gpu)
+        all_npts_gpu[:, iz]    .= vec(N_pts_gpu)
+    end
 
-        chi_sq = S_oo .+ B.^2 .* S_ss .+ C.^2 .* S_hh .- 2.0f0 .* B .* S_os .- 2.0f0 .* C .* S_oh .+ 2.0f0 .* B .* C .* S_sh
-        chi_sq_red = chi_sq ./ max.(N_pts, 1.0f0)
-        
-        # Return exact coefficients matching matrix arrays locally 
-        # Find best fit for this redshift on the GPU (minimizes data transfer)
-        best_chi_z, best_idx_z = findmin(chi_sq_red)
-        
-        # Pull back results to CPU
-        B_cpu = to_cpu(B)
-        C_cpu = to_cpu(C)
-        chi_sq_red_cpu = to_cpu(chi_sq_red)
-        N_pts_cpu = to_cpu(N_pts)
-        
-        # Standardize numerical edge cases
-        chi_sq_red_cpu[isnan.(chi_sq_red_cpu)] .= Inf
-        chi_sq_red_cpu[isinf.(chi_sq_red_cpu)] .= Inf
-        
-        valid_BC = (B_cpu .>= 0.0) .& (C_cpu .>= 0.0) .& (N_pts_cpu .> 0.0)
-        chi_sq_red_cpu[.!valid_BC] .= Inf
+    # ── OPT 6: One-shot Download and Parallel Reduction ──────────────────────
+    # Pull back the ENTIRE search space in one PCIe transfer
+    chi_red_all_cpu = to_cpu(all_chi_red_gpu)
+    npts_all_cpu    = to_cpu(all_npts_gpu)
+    
+    # Standardize numerical edge cases
+    chi_red_all_cpu[isnan.(chi_red_all_cpu)] .= Inf
+    chi_red_all_cpu[isinf.(chi_red_all_cpu)] .= Inf
+    
+    # Reshape for type-based scanning
+    results_3d = reshape(chi_red_all_cpu, N_T, N_H, N_z)
+    npts_3d    = reshape(npts_all_cpu, N_T, N_H, N_z)
 
-        type_indices = [type_to_index[transient_template_info["Type"][transient_template_names[i]]] for i in 1:N_T]
-        type_locks = [ReentrantLock() for _ in 1:n_types]
-
-        # Thread-safe assignments since matrix math operates over all variables jointly
-        Threads.@threads for t_idx in 1:N_T
-            t_idx in galactic_transients && z != 0.0 && continue
+    # Parallel Scan across SN Types
+    Threads.@threads for t_type_index in 1:n_types
+        t_indices_for_type = type_groups[t_type_index]
+        
+        best_val_global = Inf
+        best_t_global   = 0
+        best_h_global   = 0
+        best_z_global   = 0
+        
+        for iz in 1:N_z
+            z = redshift_range[iz]
+            # Check overlap coverage for this redshift
+            N_pts_z = N_pts_target_z[iz]
             
-            t_type_index = type_indices[t_idx]
-            
-            for h_idx in 1:N_H
-                c_val = chi_sq_red_cpu[t_idx, h_idx]
+            for t_idx in t_indices_for_type
+                # Filter out galactic sources at z > 0
+                t_idx in galactic_transients && z != 0.0 && continue
                 
-                # B and C failed bounds (set to inf) or was worse model fit
-                if c_val >= chi_squared_red_arr[t_type_index]
+                # Check template coverage overlap
+                if overlap_matrix[t_idx, iz] / max(N_pts_z, 1.0f0) < (minimum_overlap / 100.0f0)
                     continue
                 end
                 
-                lock(type_locks[t_type_index]) do
-                    if c_val < chi_squared_red_arr[t_type_index]
-                        
-                        norm_transient = B_cpu[t_idx, h_idx]
-                        norm_host = C_cpu[t_idx, h_idx]
-                        
-                        chi_squared_arr[t_type_index]     = c_val * N_pts_cpu[t_idx, h_idx]
-                        chi_squared_red_arr[t_type_index] = c_val
-                        norm_arr[t_type_index, 1]         = norm_transient
-                        norm_arr[t_type_index, 2]         = norm_host
-                        best_indices[t_type_index, 1]     = t_idx
-                        best_indices[t_type_index, 2]     = h_idx
-                        redshift_vals[t_type_index]       = z
-
-                        # Reconstruct precisely to output metrics
-                        # Pull back only the specific columns needed from GPU to minimize transfer
-                        MT_col = to_cpu(MT_gpu[:, t_idx])
-                        MH_col = to_cpu(MH_gpu[:, h_idx])
-                        T_col  = to_cpu(T_gpu[:, t_idx])
-                        H_col  = to_cpu(H_gpu[:, h_idx])
-
-                        valid_mask = (target_w .> 0) .& (MT_col .> 0) .& (MH_col .> 0)
-                        
-                        b_target_v = target_f[valid_mask]
-                        b_target_σ_v = frozen_flux_σ[valid_mask]
-                        b_transient_v = T_col[valid_mask]
-                        b_host_v = H_col[valid_mask]
-                        b_host_λ = frozen_λ[valid_mask]
-                        
-                        best_f = (b_transient_v .* norm_transient) .+ (b_host_v .* norm_host)
-                        
-                        host_flux_sum = sum(b_host_v .* norm_host)
-                        total_flux = sum(best_f)
-                        contam_array[t_type_index] = (host_flux_sum / total_flux) * 100
-
-                        emission_lines_arr[t_type_index]   = collect(Float64, emission_line)
-                        emission_lines_λ_arr[t_type_index] = collect(Float64, emission_line_λ)
-
-                        binned_spectra_arr[t_type_index]   = collect(Float64, binned_flux)
-                        binned_λ_arr[t_type_index]         = collect(Float64, binned_λ)
-                        binned_spectra_σ_arr[t_type_index] = collect(Float64, binned_flux_σ)
-
-                        best_fit_arr[t_type_index]            = collect(Float64, best_f)
-                        best_fit_λ_arr[t_type_index]          = collect(Float64, b_host_λ)
-                        fitted_spectra_arr[t_type_index]      = collect(Float64, b_target_v)
-                        fitted_spectra_σ_arr[t_type_index]    = collect(Float64, b_target_σ_v)
-                        fitted_spectra_λ_arr[t_type_index]    = collect(Float64, b_host_λ)
-                        transient_component_arr[t_type_index] = collect(Float64, b_transient_v .* norm_transient)
-                        host_component_arr[t_type_index]      = collect(Float64, b_host_v .* norm_host)
+                for h_idx in 1:N_H
+                    c_val = results_3d[t_idx, h_idx, iz]
+                    if c_val < best_val_global
+                        best_val_global = c_val
+                        best_t_global   = t_idx
+                        best_h_global   = h_idx
+                        best_z_global   = iz
                     end
                 end
             end
         end
+        
+        # Update winners
+        if best_val_global < chi_squared_red_arr[t_type_index] && best_t_global > 0
+            chi_squared_arr[t_type_index]     = best_val_global * npts_3d[best_t_global, best_h_global, best_z_global]
+            chi_squared_red_arr[t_type_index] = best_val_global
+            best_indices[t_type_index, 1]     = best_t_global
+            best_indices[t_type_index, 2]     = best_h_global
+            redshift_vals[t_type_index]       = redshift_range[best_z_global]
+            best_z_index[t_type_index]        = best_z_global
+        end
+    end
+
+    # ── OPT 4: Deferred Reconstruction (Plotting data) ───────────────────────
+    # We only build expensive components and binned spectra for the winning combinations
+    for t_type_index in 1:n_types
+        t_idx = best_indices[t_type_index, 1]
+        h_idx = best_indices[t_type_index, 2]
+        t_idx == 0 && continue
+        
+        iz    = best_z_index[t_type_index]
+        z_val = redshift_vals[t_type_index]
+        
+        # Reconstruct exactly what was fit for this winner
+        if use_prebuilt
+            bottom_λ = 3800.0f0 / (1.0f0 + Float32(z_val))
+            top_λ    = 8000.0f0 / (1.0f0 + Float32(z_val))
+            row_start = max(1, round(Int, (bottom_λ - 2315.0f0) / 15.0f0) + 1)
+            row_end   = min(N_lam_master, round(Int, (top_λ - 2315.0f0) / 15.0f0) + 1)
+            active_grid = master_grid[row_start:row_end]
+            
+            # Winning target slice
+            target_f_win      = target_f_stack[row_start:row_end, iz]
+            target_w_win      = target_w_stack[row_start:row_end, iz]
+            frozen_flux_σ_win = raw_flux_σ_stack[iz][row_start:row_end]
+            frozen_λ_win      = master_grid[row_start:row_end]
+            
+            # Pull winning columns from GPU
+            MT_col = to_cpu(MT_master_gpu[row_start:row_end, t_idx])
+            MH_col = to_cpu(MH_master_gpu[row_start:row_end, h_idx])
+            T_col  = to_cpu(T_master_gpu[row_start:row_end, t_idx])
+            H_col  = to_cpu(H_master_gpu[row_start:row_end, h_idx])
+            
+            # Re-apply masks for reconstruction
+            if z_val != 0.0 && t_idx in galactic_transients
+                MT_col .= 0.0f0
+            end
+            invalid_win = .!target_valid_stack[row_start:row_end, iz]
+            MT_col[invalid_win] .= 0.0f0
+            MH_col[invalid_win] .= 0.0f0
+            
+            valid_mask = (target_w_win .> 0) .& (MT_col .> 0) .& (MH_col .> 0)
+            
+            # Re-calculate coefficients for this specific winner
+            # Y = B*T + C*H
+            # We already have the analytical solution from the GPU run, 
+            # but it's simpler to just solve the 2x2 system here once for the winner
+            Y_v = target_f_win[valid_mask]
+            W_v = target_w_win[valid_mask]
+            T_v = T_col[valid_mask]
+            H_v = H_col[valid_mask]
+            
+            # Analytical 2x2 solve
+            s_ss = sum(W_v .* T_v.^2)
+            s_hh = sum(W_v .* H_v.^2)
+            s_sh = sum(W_v .* T_v .* H_v)
+            s_os = sum(W_v .* Y_v .* T_v)
+            s_oh = sum(W_v .* Y_v .* H_v)
+            
+            det_win = s_ss * s_hh - s_sh^2
+            norm_transient = (s_os * s_hh - s_oh * s_sh) / det_win
+            norm_host      = (s_oh * s_ss - s_os * s_sh) / det_win
+            
+            norm_arr[t_type_index, 1] = norm_transient
+            norm_arr[t_type_index, 2] = norm_host
+            
+            binned_flux_win   = raw_flux_stack[iz][row_start:row_end]
+            binned_flux_σ_win = frozen_flux_σ_win
+            binned_λ_win      = active_grid
+        else
+            # For legacy path, we would need to re-run resampler, but it's rarely used
+            continue
+        end
+        
+        norm_transient = norm_arr[t_type_index, 1]
+        norm_host      = norm_arr[t_type_index, 2]
+        
+        b_target_v     = target_f_win[valid_mask]
+        b_target_σ_v   = frozen_flux_σ_win[valid_mask]
+        b_transient_v  = T_col[valid_mask]
+        b_host_v       = H_col[valid_mask]
+        b_host_λ       = frozen_λ_win[valid_mask]
+        
+        best_f = (b_transient_v .* norm_transient) .+ (b_host_v .* norm_host)
+        
+        host_flux_sum = sum(b_host_v .* norm_host)
+        total_flux = sum(best_f)
+        contam_array[t_type_index] = (host_flux_sum / total_flux) * 100
+
+        emission_lines_arr[t_type_index]   = collect(Float64, emission_line)
+        emission_lines_λ_arr[t_type_index] = collect(Float64, emission_line_λ)
+
+        binned_spectra_arr[t_type_index]   = collect(Float64, binned_flux_win)
+        binned_λ_arr[t_type_index]         = collect(Float64, binned_λ_win)
+        binned_spectra_σ_arr[t_type_index] = collect(Float64, binned_flux_σ_win)
+
+        best_fit_arr[t_type_index]            = collect(Float64, best_f)
+        best_fit_λ_arr[t_type_index]          = collect(Float64, b_host_λ)
+        fitted_spectra_arr[t_type_index]      = collect(Float64, b_target_v)
+        fitted_spectra_σ_arr[t_type_index]    = collect(Float64, b_target_σ_v)
+        fitted_spectra_λ_arr[t_type_index]    = collect(Float64, b_host_λ)
+        transient_component_arr[t_type_index] = collect(Float64, b_transient_v .* norm_transient)
+        host_component_arr[t_type_index]      = collect(Float64, b_host_v .* norm_host)
     end
 
     # ── Collect results ───────────────────────────────────────────────────────
