@@ -1,13 +1,13 @@
 name = "SIREN"
 uuid = "af1d20ca-a97d-4fe6-a17a-0966c3d02919"
-authors = ["Edward Charleton <e.charleton@soton.ac.uk"]
 version = "0.1.0"
+authors = ["Edward Charleton <e.charleton@soton.ac.uk"]
 
 [deps]
 ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
-CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
@@ -15,6 +15,7 @@ DustExtinction = "fb44c06c-c62f-5397-83f5-69249e0a3c8e"
 FITSIO = "525bcba6-941b-5504-bd06-fd0dc1a4d2eb"
 FilePathsBase = "48062228-2e41-5def-b9a4-89aafe57970f"
 Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 LaTeXStrings = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
 LsqFit = "2fda8390-95c7-5789-9bda-21331edee243"
@@ -34,3 +35,6 @@ SavitzkyGolay = "c4bf5708-b6a6-4fbe-bcd0-6850ed671584"
 Snappy = "59d4ed8c-697a-5b28-a4c7-fe95c22820f9"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
+
+[compat]
+JLD2 = "0.4.55"

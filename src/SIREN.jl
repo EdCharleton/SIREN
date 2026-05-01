@@ -15,6 +15,7 @@ using LsqFit
 using LaTeXStrings
 using CSV
 using DataStructures: OrderedDict
+using JLD2
 
 #The function used to call the main function and is necessary for PackageCompiler
 function julia_main()::Cint
@@ -33,23 +34,32 @@ function SIREN_main()
     if length(ARGS) > 0
         # Running in command-line mode
         parsed_args = parse_command_line_args()
-        file_path = parsed_args["file_path"]
-        target_redshift = parsed_args["redshift"]
+        file_path = parsed_args["file"]
+        
+        # Handle Redshift: convert to float if not "None"
+        raw_z = parsed_args["redshift"]
+        target_redshift = (raw_z == "None" || raw_z == "none") ? "None" : parse(Float64, raw_z)
+        
         galactic_source = parsed_args["galactic_source"]
         show_plots = parsed_args["make_plot"]
         target_remove_telluric = parsed_args["remove_telluric"]
-        batch_mode = parsed_args["batch_mode"]
+        batch_mode = parsed_args["batch"]
         minimum_overlap = parsed_args["minimum_overlap"]
+        use_gpu_flag = parsed_args["use_gpu"]
     else
         # Running in REPL mode, add your inputs to the below:
-        file_path = "/Users/edcharleton/PhD/SIREN/spectra_to_classify/TiDES Spectra/TiDES-SN26aip.ascii"
+        file_path = "/Users/chris/Documents/SIRENplus/TiDES-SN26aip.ascii"
         target_redshift = "None"
         target_remove_telluric = "N"
-        minimum_overlap = 90
+        minimum_overlap = 80
         galactic_source = "N"
         show_plots = true
         batch_mode = false
+        use_gpu_flag = true
     end
+
+    # Set the global GPU flag in the module
+    ClassifierFunctions.use_gpu = use_gpu_flag
 
     #Set up threading for julia
     ENV["JULIA_NUM_THREADS"] = "auto"
@@ -83,9 +93,39 @@ function SIREN_main()
     #Import the telluric mask where there is atmospheric absorption
     telluric_mask = readdlm(joinpath("src", "metadata", "tellurics.txt"))
 
-    #Read in the templates of both host and supernova/transient wavlengths and spectra
-    sn_template_wavs, sn_template_spectra = read_template_files(sn_template_file_names, sn_template_metadata, "Supernova Template")
-    hg_template_wavs, hg_template_spectra, hg_template_mask = read_template_files(hg_template_file_names, hg_template_metadata, "Hg Template")
+    # Load pre-built master matrices if available
+    prebuilt_path = joinpath("prebuilt_templates.jld2")
+    if isfile(prebuilt_path)
+        println("Loading pre-built template matrices from $prebuilt_path ...")
+        prebuilt = load(prebuilt_path)
+        master_grid = prebuilt["master_grid"]
+        
+        # Phase 1: Upload to GPU once at startup
+        T_master    = ClassifierFunctions.to_gpu(prebuilt["T_master"])
+        MT_master   = ClassifierFunctions.to_gpu(prebuilt["MT_master"])
+        H_master    = ClassifierFunctions.to_gpu(prebuilt["H_master"])
+        MH_master   = ClassifierFunctions.to_gpu(prebuilt["MH_master"])
+        
+        println("  Loaded & Residing on GPU: T=$(size(T_master)), H=$(size(H_master)), grid=$(length(master_grid)) pts")
+        
+        # Skip loading individual template files to save time/memory
+        sn_template_wavs = Vector{Vector{Float64}}()
+        sn_template_spectra = Vector{Vector{Float64}}()
+        hg_template_wavs = Vector{Vector{Float64}}()
+        hg_template_spectra = Vector{Vector{Float64}}()
+    else
+        println("No pre-built templates found at $prebuilt_path — using legacy CSV loading.")
+        println("Run 'julia --project=. src/prebuild_templates.jl' to generate for faster classification.")
+        master_grid = nothing
+        T_master = nothing
+        MT_master = nothing
+        H_master = nothing
+        MH_master = nothing
+
+        # Read in the templates of both host and supernova/transient wavlengths and spectra
+        sn_template_wavs, sn_template_spectra = read_template_files(sn_template_file_names, sn_template_metadata, "Supernova Template")
+        hg_template_wavs, hg_template_spectra, hg_template_mask = read_template_files(hg_template_file_names, hg_template_metadata, "Hg Template")
+    end
 
     #read in target spectra
     if batch_mode == true
@@ -99,15 +139,23 @@ function SIREN_main()
 
     #Initialise an empty dictionary to store the classifications
     classifications = OrderedDict()
+    class_lock = ReentrantLock()
 
     #-------------------------------------------------- RUN THE CLASSIFIER --------------------------------------------------
     println("----------------------------------------------")
-    println("Beginning Classifications....")
 
-    #Loop through all input spectra, if in batch mode, display the progress bar
-    for n in (batch_mode ? ProgressBar(target_spectra_names) : (target_spectra_names))
+    # Phase 2: Parallelized Batch classification
+    # Loop through all input spectra, if in batch mode, display the progress bar
+    # Using Threads.@threads to process multiple spectra concurrently
+    p = ProgressBar(target_spectra_names)
+    Threads.@threads for n in target_spectra_names
+        batch_mode && update(p)
+        
         target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
         target_name = splitext(n)[1]
+
+        local_target_redshift = target_redshift
+        local_target_remove_telluric = target_remove_telluric
 
         if batch_mode == true
             target_index = findfirst(x -> x == target_name, all_target_names)
@@ -115,20 +163,20 @@ function SIREN_main()
                 target_name = n
                 target_index = findfirst(x -> x == target_name, all_target_names)
             end
-            target_redshift = sn_metadata[target_index, "Redshift"]
-            target_remove_telluric = sn_metadata[target_index, "REMOVE_TELLURIC"]
+            local_target_redshift = sn_metadata[target_index, "Redshift"]
+            local_target_remove_telluric = sn_metadata[target_index, "REMOVE_TELLURIC"]
         end
 
-        if typeof(target_redshift) == Float64
-            if target_redshift > 1.0
-                println("Target ", target_name, " has a redshift of ", target_redshift, " which is too high for SIREN")
+        if typeof(local_target_redshift) == Float64
+            if local_target_redshift > 1.0
+                println("Target ", target_name, " has a redshift of ", local_target_redshift, " which is too high for SIREN")
                 continue
             end
         end 
 
         #print all the unique types in the template metadata to the console
-        unique_types = unique(values(sn_template_metadata["Type"]))
-
+        # unique_types = unique(values(sn_template_metadata["Type"]))
+        
         if batch_mode == false
             println("Classifying ", target_name, "...")
         end
@@ -136,10 +184,17 @@ function SIREN_main()
 
         best_params, chi_red, path, z, type = chi_squared_classifier(
             sn_template_metadata, sn_template_file_names, sn_template_spectra, hg_template_metadata, hg_template_file_names, hg_template_spectra,
-            sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, target_redshift, 
-            telluric_mask, batch_mode, show_plots, target_remove_telluric, minimum_overlap)
+            sn_template_wavs, hg_template_wavs, target_spectra, target_wl, target_spectra_σ, target_name, local_target_redshift, 
+            telluric_mask, batch_mode, show_plots, local_target_remove_telluric, minimum_overlap;
+            master_grid=master_grid, T_master=T_master, MT_master=MT_master,
+            H_master=H_master, MH_master=MH_master)
 
-        #Output the results of the best matching classification to the console as well as the location of the plot
+        # Thread-safe storage of results
+        lock(class_lock) do
+            classifications[target_name] = (z, type, minimum(chi_red))
+        end
+
+        # Output the results of the best matching classification to the console
         if batch_mode == false
             println("SN Name           : ", target_name)
             println("Redshift          : ", round(z, digits = 2))
@@ -147,7 +202,6 @@ function SIREN_main()
             println("Type              : ", type)
             println("----------------------------------------------")
         end
-        classifications[target_name] = (z, type, minimum(chi_red))
     end
 
     #Save the classifications as a JSON file
