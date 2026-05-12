@@ -106,7 +106,7 @@ function SIREN_main()
         H_master    = ClassifierFunctions.to_gpu(prebuilt["H_master"])
         MH_master   = ClassifierFunctions.to_gpu(prebuilt["MH_master"])
         
-        println("  Loaded & Residing on GPU: T=$(size(T_master)), H=$(size(H_master)), grid=$(length(master_grid)) pts")
+        #println("  Loaded & Residing on GPU: T=$(size(T_master)), H=$(size(H_master)), grid=$(length(master_grid)) pts")
         
         # Skip loading individual template files to save time/memory
         sn_template_wavs = Vector{Vector{Float64}}()
@@ -202,6 +202,20 @@ function SIREN_main()
             println("Type              : ", type)
             println("----------------------------------------------")
         end
+
+            try
+        # ... your existing SIREN classification calls ...
+
+        if show_plots
+            println("\nPlot displayed. Press Enter to exit.")
+            readline()   # ← keeps the GR window alive until user confirms
+        end
+
+    catch e
+        println("Error: $e")
+        return 1
+    end
+    return 0
     end
 
     #Save the classifications as a JSON file
@@ -216,4 +230,4 @@ end
 end
 
 #Call the main function to check its working - does not work in command line mode, so delete if turning into an exe file
-SIREN.julia_main()
+#SIREN.julia_main()

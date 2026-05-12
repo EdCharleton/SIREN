@@ -38,3 +38,4 @@ julia_dir/
 host_template_dir.zip
 transient_template_dir.zip
 .DS_Store
+spectra/

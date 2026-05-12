@@ -31,21 +31,15 @@ module ClassifierFunctions
     # Hardware-Accelerated Math Setup
     #------------------------------------------------------------
     # We import at top-level (required by Julia) but check functionality in __init__
-    try; import CUDA; catch; end
     try; import Metal; catch; end
 
-    is_cuda_loaded = false
     is_metal_loaded = false
     use_gpu = true
 
     function __init__()
-        global is_cuda_loaded, is_metal_loaded
+        global is_metal_loaded
         
-        # Check functionality at runtime
-        try
-            is_cuda_loaded = CUDA.functional()
-        catch
-        end
+
 
         try
             is_metal_loaded = Metal.functional()
@@ -53,21 +47,18 @@ module ClassifierFunctions
         end
 
         println("--- Hardware Setup ---")
-        println("CUDA functional: ", is_cuda_loaded)
         println("Metal functional: ", is_metal_loaded)
-        println("Processing on: ", is_cuda_loaded ? "NVIDIA GPU" : (is_metal_loaded ? "Apple Metal GPU" : "Native Multi-threaded CPU"))
+        println("Processing on: ", (is_metal_loaded ? "Apple Metal GPU" : "Native Multi-threaded CPU"))
         println("----------------------")
     end
 
     function to_gpu(x)
         # If it's already on GPU, return as is
-        if (is_cuda_loaded && x isa CUDA.CuArray) || (is_metal_loaded && x isa Metal.MtlArray)
+        if (is_metal_loaded && x isa Metal.MtlArray)
             return x
         end
 
-        if use_gpu && is_cuda_loaded
-            return CUDA.CuArray(x)
-        elseif use_gpu && is_metal_loaded
+        if use_gpu && is_metal_loaded
             # Metal requires Float32 for numerical performance, but masks must remain Bool.
             if eltype(x) == Bool
                 return Metal.MtlArray(x)
@@ -181,7 +172,7 @@ module ClassifierFunctions
         return content, imported
     end
 
-    function plot_best_fit(SN_ID, z,
+function plot_best_fit(SN_ID, z,
     best_indices, transient_template_info, transient_template_names,
     host_template_info, host_template_names,
     original_flux, original_flux_σ, original_λ,
@@ -211,18 +202,30 @@ module ClassifierFunctions
     z_best         = round(Float64(redshift_vals[best]), digits=3)
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    # Original unbinned spectrum (observer frame)
-    obs_λ    = collect(Float64, original_λ)
-    obs_flux = collect(Float64, original_flux)
-    obs_err  = collect(Float64, original_flux_σ)
+    obs_λ_raw    = collect(Float64, original_λ)
+    obs_flux_raw = collect(Float64, original_flux)
+    obs_err_raw  = collect(Float64, original_flux_σ)
 
-    # Binned + processed spectrum (rest frame → shift back to observer frame)
-    binned_λ    = collect(Float64, fitted_spectra_λ_arr[best]) .* (1 + z_best)
-    binned_flux = collect(Float64, fitted_spectra_arr[best])
-    binned_err  = collect(Float64, fitted_spectra_σ_arr[best])
+    # Filter NaNs and infs from observed spectrum before plotting.
+    # Without this, Plots.jl draws the ribbon polygon across gaps,
+    # producing diagonal lines across the entire figure.
+    obs_valid    = isfinite.(obs_flux_raw) .& isfinite.(obs_err_raw) .& (obs_err_raw .> 0)
+    obs_λ        = obs_λ_raw[obs_valid]
+    obs_flux     = obs_flux_raw[obs_valid]
+    obs_err      = obs_err_raw[obs_valid]
 
-    # Best fit and components (rest frame → observer frame)
-    fit_λ          = collect(Float64, best_fit_λ_arr[best])     .* (1 + z_best)
+    # Binned spectrum — filter NaNs for the same reason
+    binned_λ_raw    = collect(Float64, fitted_spectra_λ_arr[best]) .* (1 + z_best)
+    binned_flux_raw = collect(Float64, fitted_spectra_arr[best])
+    binned_err_raw  = collect(Float64, fitted_spectra_σ_arr[best])
+
+    binned_valid = isfinite.(binned_flux_raw) .& isfinite.(binned_err_raw)
+    binned_λ     = binned_λ_raw[binned_valid]
+    binned_flux  = binned_flux_raw[binned_valid]
+    binned_err   = binned_err_raw[binned_valid]
+
+    # Best fit and components
+    fit_λ          = collect(Float64, best_fit_λ_arr[best]) .* (1 + z_best)
     best_fit       = collect(Float64, best_fit_arr[best])
     transient_comp = collect(Float64, transient_component_arr[best])
     host_comp      = collect(Float64, host_component_arr[best])
@@ -232,104 +235,115 @@ module ClassifierFunctions
 
     display_name = splitext(splitpath(SN_ID)[end])[1]
 
-    # ── Y-axis limits from the unbinned spectrum, ignoring outlier spikes ────
+    # ── Y-axis limits ─────────────────────────────────────────────────────────
     finite_flux = filter(isfinite, obs_flux)
     y_lo = quantile(finite_flux, 0.01)
     y_hi = quantile(finite_flux, 0.99) * 1.3
 
-    # ── Plot ─────────────────────────────────────────────────────────────────
-    p = plot(
-        size          = (1600, 900),
-        dpi           = 300,
-        grid          = false,
-        guidefontsize = 22,
-        tickfontsize  = 16,
-        titlefont     = 22,
-        legendfontsize = 16,
-        left_margin   = 9Plots.mm,
-        bottom_margin = 10Plots.mm,
-        top_margin    = 10Plots.mm,
-        right_margin  = 4Plots.mm
-    )
+    # ── Clamp ribbon heights to prevent spike artifacts ───────────────────────
+    # Large error values near spectral spikes cause the ribbon to extend far
+    # beyond the y-axis clip, producing additional diagonal fill artifacts.
+    ribbon_obs    = clamp.(min.(obs_err,    (y_hi - y_lo) * 0.1), 0.0, max.(y_hi .- obs_flux,    0.0))
+    ribbon_binned = clamp.(min.(binned_err, (y_hi - y_lo) * 0.1), 0.0, max.(y_hi .- binned_flux, 0.0))
 
-    # 1. Original unbinned spectrum + error ribbon — light grey fill, mid-grey line
-    plot!(p,
-        obs_λ, obs_flux,
-        ribbon    = min.(obs_err, (y_hi - y_lo) * 0.1),
-        fillalpha = 0.15,
-        fillcolor = "#C8C8C8",
-        linecolor = "#909090",
-        linewidth = 0.8,
-        label     = "Observed ($display_name)",
-        xlabel    = "Wavelength (Å)",
-        ylabel    = "Flux (arb. units)",
-        legend    = :topright,
-        ylims     = (y_lo, y_hi)
-    )
+    # ── Plot — all rendering errors suppressed via redirect_stderr ────────────
+    p = redirect_stderr(devnull) do
+        _p = plot(
+            size           = (1600, 900),
+            dpi            = 300,
+            grid           = false,
+            guidefontsize  = 22,
+            tickfontsize   = 16,
+            titlefont      = 22,
+            legendfontsize = 16,
+            left_margin    = 9Plots.mm,
+            bottom_margin  = 10Plots.mm,
+            top_margin     = 10Plots.mm,
+            right_margin   = 4Plots.mm
+        )
 
-    # 2. Binned + emission-line-removed spectrum — solid black
-    plot!(p,
-        binned_λ, binned_flux,
-        ribbon    = min.(binned_err, (y_hi - y_lo) * 0.1),
-        fillalpha = 0.10,
-        fillcolor = :black,
-        linecolor = :black,
-        linewidth = 1.4,
-        label     = "Binned + Lines Removed"
-    )
+        # 1. Observed spectrum (NaN-filtered) + clamped ribbon
+        plot!(_p,
+            obs_λ, obs_flux,
+            ribbon    = ribbon_obs,
+            fillalpha = 0.15,
+            fillcolor = "#C8C8C8",
+            linecolor = "#909090",
+            linewidth = 0.8,
+            label     = "Observed ($display_name)",
+            xlabel    = "Wavelength (Å)",
+            ylabel    = "Flux (arb. units)",
+            legend    = :topright,
+            ylims     = (y_lo, y_hi)
+        )
 
-    # 3. Best fit — solid red
-    plot!(p,
-        fit_λ, best_fit,
-        linecolor = :red,
-        linewidth = 1.8,
-        label     = "Best Fit ($transient_type + $host_type)"
-    )
+        # 2. Binned + emission-line-removed spectrum
+        plot!(_p,
+            binned_λ, binned_flux,
+            ribbon    = ribbon_binned,
+            fillalpha = 0.10,
+            fillcolor = :black,
+            linecolor = :black,
+            linewidth = 1.4,
+            label     = "Binned + Lines Removed"
+        )
 
-    # 4. Transient component — dashed blue
-    plot!(p,
-        fit_λ, transient_comp,
-        linecolor  = :royalblue,
-        linewidth  = 1.2,
-        linestyle  = :dash,
-        label      = "Transient ($transient_type)"
-    )
+        # 3. Best fit
+        plot!(_p,
+            fit_λ, best_fit,
+            linecolor = :red,
+            linewidth = 1.8,
+            label     = "Best Fit ($transient_type + $host_type)"
+        )
 
-    # 5. Host component — dashed orange
-    plot!(p,
-        fit_λ, host_comp,
-        linecolor  = :darkorange,
-        linewidth  = 1.2,
-        linestyle  = :dash,
-        label      = "Host Galaxy ($host_type)"
-    )
+        # 4. Transient component
+        plot!(_p,
+            fit_λ, transient_comp,
+            linecolor = :royalblue,
+            linewidth = 1.2,
+            linestyle = :dash,
+            label     = "Transient ($transient_type)"
+        )
 
-    # 6. Emission line markers
-    if !isempty(em_lines_λ)
-        for (λ_em, name) in zip(em_lines_λ, em_lines)
-            vline!(p, [λ_em],
-                linecolor = :green,
-                linewidth = 0.8,
-                linestyle = :dot,
-                label     = ""
-            )
-            annotate!(p, λ_em, y_hi * 0.92,
-                text(string(name), :green, :center, 7))
+        # 5. Host component
+        plot!(_p,
+            fit_λ, host_comp,
+            linecolor = :darkorange,
+            linewidth = 1.2,
+            linestyle = :dash,
+            label     = "Host Galaxy ($host_type)"
+        )
+
+        # 6. Emission line markers
+        if !isempty(em_lines_λ)
+            for (λ_em, name) in zip(em_lines_λ, em_lines)
+                vline!(_p, [λ_em],
+                    linecolor = :green,
+                    linewidth = 0.8,
+                    linestyle = :dot,
+                    label     = ""
+                )
+                annotate!(_p, λ_em, y_hi * 0.92,
+                    text(string(name), :green, :center, 7))
+            end
         end
-    end
 
-    title!(p, "$display_name  |  z = $z_best  | type = $transient_type |  Phase = $phase days")
-
-    if !isnothing(savepath)
-        outpath = joinpath(savepath, "$(display_name)_best_fit.png")
-        savefig(p, outpath)
-        println("Plot saved to $outpath")
-        return outpath
+        title!(_p, "$display_name  |  z = $z_best  | type = $transient_type |  Phase = $phase days")
+        _p
     end
 
     display(p)
+
+    if !isnothing(savepath)
+        outpath = joinpath(savepath, "$(display_name)_best_fit.png")
+        redirect_stderr(devnull) do
+            savefig(p, outpath)
+        end
+        return outpath
+    end
     return p
 end
+
 
     function calculate_spectral_error(spectra, spectra_λ, window_size::Int)
         #Use Savitsky Golay to smooth the spectrum, then calculate the residuals
@@ -1002,7 +1016,7 @@ function chi_squared_classifier(
     N_pts_target_z = vec(sum(target_valid_stack, dims=1))
 
     # ── Pre-allocate GPU result tensors (reused every pass) ───────────────────
-    if use_gpu && (is_metal_loaded || is_cuda_loaded)
+    if use_gpu && (is_metal_loaded)
         B_gpu          = similar(T_master_gpu, Float32, N_T, N_H)
         C_gpu          = similar(T_master_gpu, Float32, N_T, N_H)
         chi_sq_gpu     = similar(T_master_gpu, Float32, N_T, N_H)
