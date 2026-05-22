@@ -46,10 +46,10 @@ module ClassifierFunctions
         catch
         end
 
-        println("--- Hardware Setup ---")
-        println("Metal functional: ", is_metal_loaded)
-        println("Processing on: ", (is_metal_loaded ? "Apple Metal GPU" : "Native Multi-threaded CPU"))
-        println("----------------------")
+        #println("--- Hardware Setup ---")
+        #println("Metal functional: ", is_metal_loaded)
+        #println("Processing on: ", (is_metal_loaded ? "Apple Metal GPU" : "Native Multi-threaded CPU"))
+        #println("----------------------")
     end
 
     function to_gpu(x)
@@ -85,22 +85,22 @@ module ClassifierFunctions
         s = ArgParseSettings()
         @add_arg_table! s begin
             "--file", "-f"
-                help = "Path to the input data file"
+                help = "Path to the input data file/directory (see --batch flag)"
                 arg_type = String
                 required = true
             
             "--redshift", "-z"
                 help = "Redshift value (or 'None' for search)"
                 arg_type = String
-                required = true
+                default = "None"
     
             "--batch", "-b"
-                help = "Flag to run in batch mode"
+                help = "Flag to run in batch mode (multiple at once)"
                 arg_type = Bool
                 default = false
             
             "--remove_telluric"
-                help = "Flag to remove telluric absorption"
+                help = "Flag to remove telluric absorption at telluric wavelengths"
                 arg_type = String
                 default = "N"  # Default is 'no'
     
@@ -109,10 +109,10 @@ module ClassifierFunctions
                 arg_type = String
                 default = "N"  # Default is 'no'
     
-            "--make_plot"
-                help = "Flag to generate a plot"
+            "--show_plot"
+                help = "Flag to show the plot"
                 arg_type = Bool
-                default = true  # Default is 'yes'
+                default = false  # Default is 'no'
     
             "--minimum_overlap"
                 help = "Minimum overlap between the target and templates, units of %"
@@ -122,7 +122,11 @@ module ClassifierFunctions
             "--use_gpu"
                 help = "Flag to enable/disable GPU acceleration"
                 arg_type = Bool
-                default = true
+                default = false
+            "--savepath"
+                help = "Directory to save output plots"
+                arg_type = String
+                default = "classifications"
         end
     
         return parse_args(ARGS, s)
@@ -180,7 +184,7 @@ function plot_best_fit(SN_ID, z,
     fitted_spectra_arr, fitted_spectra_σ_arr, fitted_spectra_λ_arr,
     chi_squared_red_arr, redshift_vals,
     emission_lines_arr, emission_lines_λ_arr,
-    savepath = nothing)
+    savepath = "classifications", show_plot = false)
 
     best = argmin(chi_squared_red_arr)
 
@@ -306,13 +310,7 @@ function plot_best_fit(SN_ID, z,
         )
 
         # 5. Host component
-        plot!(_p,
-            fit_λ, host_comp,
-            linecolor = :darkorange,
-            linewidth = 1.2,
-            linestyle = :dash,
-            label     = "Host Galaxy ($host_type)"
-        )
+        plot!(_p, fit_λ, host_comp, linecolor = :darkorange, linewidth = 1.2, linestyle = :dash, label = "Host Galaxy ($host_type)")
 
         # 6. Emission line markers
         if !isempty(em_lines_λ)
@@ -332,7 +330,9 @@ function plot_best_fit(SN_ID, z,
         _p
     end
 
-    display(p)
+    if show_plot
+        display(p)
+    end
 
     if !isnothing(savepath)
         outpath = joinpath(savepath, "$(display_name)_best_fit.png")
@@ -375,118 +375,152 @@ end
         return new_smoothed_spectra, new_spectra_λ, new_sigma
     end
     
-    function read_target_spectra(directory::String, delimiter::Char = ',', skip_header::Int = 0)
-        files_dict = Dict{String, Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}}()
+    
+# ── Valid spectral file extensions ────────────────────────────────────────────
+const VALID_EXTENSIONS = Set([
+    ".dat", ".txt", ".ascii", ".csv", ".list",
+    ".flm", ".asci", ".clean", ".asc", ".sed", ".fits"
+])
+
+# ── read_target_spectra ───────────────────────────────────────────────────────
+# Single-file mode (batch_mode = false, default): reads the file at `directory`.
+# Batch mode (batch_mode = true):  if `directory` is a directory path, scans it
+# for every file whose extension is in VALID_EXTENSIONS and reads them all.
+# Returns Dict{filename => (λ, flux, σ)}.
+function read_target_spectra(directory::String, delimiter::Char = ',',
+                             skip_header::Int = 0; batch_mode::Bool = false)
+
+    files_dict = Dict{String, Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}}()
+
+    # ── Resolve the list of files to process ─────────────────────────────────
+    file_list = if batch_mode && isdir(directory)
+        found = [joinpath(directory, f) for f in readdir(directory)
+                 if isfile(joinpath(directory, f)) &&
+                    splitext(f)[2] in VALID_EXTENSIONS]
+        if isempty(found)
+            @warn "Batch mode: no supported spectral files found in $directory"
+        else
+            printstyled("Batch mode:", color=:green)
+            println(" found $(length(found)) spectra in $directory")
+        end
+        found
+    else
+        isdir(directory) && error("Single-file mode: expected a file path, got a directory. Pass batch_mode=true to scan a directory.")
         println("Loading in Target Spectra...")
+        [directory]
+    end
 
-        skip = skip_header
-        filename = directory
+    isempty(file_list) && return files_dict
 
-        if endswith(filename, ".dat") || endswith(filename, ".txt") || endswith(filename, ".ascii") || endswith(filename, ".csv") || endswith(filename, ".list") || endswith(filename, ".flm") || endswith(filename, ".asci") || endswith(filename, ".clean") || endswith(filename, ".asc") || endswith(filename, ".sed")
-            file_path = joinpath(directory)
+    # ── Per-file ingestion ────────────────────────────────────────────────────
+    for file_path in file_list
+        filename  = basename(file_path)
+        ext       = splitext(filename)[2]
 
+        λ = nothing; spectra = nothing; spectra_σ = nothing
+
+        if ext in Set([".dat",".txt",".ascii",".csv",".list",
+                       ".flm",".asci",".clean",".asc",".sed"])
+
+            skip     = skip_header
             imported = false
-            while !imported
+            content  = nothing
 
-                if endswith(filename, ".csv")
-                    content = CSV.read(file_path, DataFrame)
-                else 
+            while !imported
+                if ext == ".csv"
+                    content  = CSV.read(file_path, DataFrame)
+                    imported = true
+                else
                     content = readdlm(file_path, delimiter, skipstart = skip)
                     try
-                        spectra = content[:, 2] 
+                        _ = content[:, 2]
                     catch
-                        content, imported = string_import(file_path, delimiter, skip) #Check if the rows are being imported as one big string instead of columns
+                        content, imported = string_import(file_path, delimiter, skip)
                     end
                 end
 
-                if typeof(content[1,1]) == String || content[1, 1] == 0 || typeof(content[1,1]) == SubString{String}
-                    imported = false
-                    skip += 1
-                else
-                    imported = true
+                if !imported
+                    r1 = content[1, 1]
+                    if typeof(r1) <: AbstractString || r1 == 0
+                        skip += 1
+                    else
+                        imported = true
+                    end
                 end
-                global content
             end
-            λ = content[:, 1]
-            spectra = content[:, 2]
+
+            λ       = Float32.(content[:, 1])
+            spectra = Float32.(content[:, 2])
 
             spec_min = minimum(spectra)
-            if spec_min < 0
-                spectra = spectra .+ (2*abs(spec_min))
-            end
+            spectra .+= spec_min < 0 ? 2f0 * abs(spec_min) : 0f0
 
             no_errs = false
-
             try
-                spectra_σ = content[:, 3]
-                if isempty(spectra_σ) || any(isnan.(spectra_σ))
-                    no_errs = true
-                end
+                spectra_σ = Float32.(content[:, 3])
+                no_errs   = isempty(spectra_σ) || any(isnan.(spectra_σ))
             catch
                 no_errs = true
             end
 
-            scaler = maximum(filter(!isnan, spectra)) / 100
-            spectra = (spectra ./ scaler)
+            scaler  = maximum(filter(!isnan, spectra)) / 100f0
+            spectra = spectra ./ scaler
 
             if !no_errs
-                spectra_σ = (spectra_σ ./ scaler)
+                spectra_σ = spectra_σ ./ scaler
             else
                 spectra, λ, spectra_σ = calculate_spectral_error(spectra, λ, 27)
             end
 
-            files_dict[filename] = (λ, spectra, spectra_σ)
-
-        elseif endswith(filename, ".fits")
-            file_path = joinpath(directory, filename)
-            
-            f = FITS(file_path)
+        elseif ext == ".fits"
+            f           = FITS(file_path)
             spectra_hdr = read_header(f[1])
-
-            spectra = read(f[1])
+            spectra     = Float32.(read(f[1]))
 
             try
-                spectra_σ = read(f[2])
+                spectra_σ = Float32.(sqrt.(read(f[2])))
             catch
-                spectra_σ = spectra .* 0.1
+                spectra_σ = spectra .* 0.1f0
             end
 
-            spectra_σ = sqrt.(spectra_σ)
             try
-                λ= collect(spectra_hdr["CRVAL1"] - (spectra_hdr["CRPIX1"] * spectra_hdr["CDELT1"]) : spectra_hdr["CDELT1"] : (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CDELT1"] + spectra_hdr["CRVAL1"])
+                λ = Float32.(collect(
+                    spectra_hdr["CRVAL1"] - spectra_hdr["CRPIX1"] * spectra_hdr["CDELT1"] :
+                    spectra_hdr["CDELT1"] :
+                    (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CDELT1"] + spectra_hdr["CRVAL1"]
+                ))
             catch
-                λ= collect(spectra_hdr["CRVAL1"] - (spectra_hdr["CRPIX1"] * spectra_hdr["CD1_1"]) : spectra_hdr["CD1_1"] : (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CD1_1"] + spectra_hdr["CRVAL1"])
+                λ = Float32.(collect(
+                    spectra_hdr["CRVAL1"] - spectra_hdr["CRPIX1"] * spectra_hdr["CD1_1"] :
+                    spectra_hdr["CD1_1"] :
+                    (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CD1_1"] + spectra_hdr["CRVAL1"]
+                ))
             end
 
-            
-            #remove any nans from the spectra and the corresponding λ
-            nans_indices = findall(.!isnan.(spectra))
-            spectra = spectra[nans_indices]
-            spectra_σ = spectra_σ[nans_indices]
-            λ = λ[nans_indices]
+            valid     = .!isnan.(spectra)
+            spectra   = spectra[valid]
+            spectra_σ = spectra_σ[valid]
+            λ         = λ[valid]
 
             spec_min = minimum(spectra)
-            if spec_min < 0
-                spectra = spectra .+ abs(spec_min)
-            end
+            spectra .+= spec_min < 0 ? abs(spec_min) : 0f0
 
-            scaler = maximum(spectra) 
-
-            spectra = (spectra ./ scaler) .* 100
-            spectra_σ = (spectra_σ ./ scaler) .* 100
-
-            files_dict[filename] = (λ, spectra, spectra_σ)
+            scaler    = maximum(spectra)
+            spectra   = (spectra ./ scaler) .* 100f0
+            spectra_σ = (spectra_σ ./ scaler) .* 100f0
 
         else
-            println(" ")
             printstyled("ERROR: File type not supported - ", color=:red)
-            println("$filename")
-            println(" ")
+            println(filename)
+            continue
         end
 
-        #end
-        return files_dict
+        files_dict[file_path] = (λ, spectra, spectra_σ)
     end
+
+    return files_dict
+end
+
 
     function read_template_files(template_file_names, template_metadata, label)
         println("Loading in $label Spectra...")
@@ -888,7 +922,7 @@ function chi_squared_classifier(
         batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50;
         master_grid = nothing, T_master = nothing, MT_master = nothing,
         H_master = nothing, MH_master = nothing,
-        Rv = 3.1, Av_min = -3.0, Av_max = 3.0, Av_step = 0.5)
+        Rv = 3.1, Av_min = -3.0, Av_max = 3.0, Av_step = 0.5, savepath = "classifications")
 
     use_prebuilt = !isnothing(T_master)
 
@@ -1369,9 +1403,12 @@ function chi_squared_classifier(
         best_type = top_fit_types[best_type_idx]
     end
 
-    savepath = "/Users/edcharleton/PhD/SIREN/classifications_dir"
+    #If the savepath directory doesn't exist, create it
+    if !isdir(savepath)
+        mkpath(savepath)
+    end
 
-    plotpath = show_plot ? plot_best_fit(
+    plotpath = plot_best_fit(
         SN_ID, best_redshift,
         best_indices, transient_template_info, transient_template_names,
         host_template_info, host_template_names,
@@ -1380,8 +1417,7 @@ function chi_squared_classifier(
         fitted_spectra_arr, fitted_spectra_σ_arr, fitted_spectra_λ_arr,
         chi_squared_red_arr, redshift_vals,
         emission_lines_arr, emission_lines_λ_arr,
-        savepath
-    ) : "No Plot Saved"
+        savepath, show_plot)
 
     return norm_arr, chi_squared_red_arr, plotpath, best_redshift, best_type
 end
