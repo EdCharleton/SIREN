@@ -42,3 +42,10 @@ spectra/
 templates/
 metadata/
 classifications/
+SIREN_APP/
+SIREN_APP.zip
+TiDES_metadata.csv
+TiDES_metadata.numbers
+classifications_classifications.json
+metadata.zip
+templates.zip

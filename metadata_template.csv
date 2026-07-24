@@ -1,0 +1,2 @@
+filename,redshift,z_min,z_max,z_step,type,remove_telluric,minimum_overlap,galactic_source
+Example.txt,,0.0,0.5,0.01,Ia,N,90,N

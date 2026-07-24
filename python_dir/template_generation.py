@@ -352,7 +352,7 @@ number_of_templates = 0
 if generate_supernova == True:
     #list of SNCosmo models
     model_names = np.array(['salt3', 'v19-2009kr-corr','v19-2004aw-corr', "v19-2004gv-corr", "nugent-sn91t", "nugent-sn91bg", "nugent-sn1a", "hsiao", "s11-2006jl", "v19-2006t", "v19-2012ap-corr"])
-    sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "91t-like", "91bg-like", "Ia", "Ia", "IIP", "IIb", "Ic-BL"])
+    sn_types = np.array(['Ia', 'II', 'Ic', 'Ib', "Ia-91t", "Ia-91bg", "Ia", "Ia", "IIP", "IIb", "Ic-BL"])
     galactic_source = np.array(['N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', "N", "N", "N"])
 
     salt3_tau = generate_phases(-18, 50, 1) #Ia
@@ -383,7 +383,7 @@ if generate_supernova == True:
     
     # Generate directories for the spectra
     for i in sn_types:
-        os.makedirs(os.path.join(pure_sn_dir, "type_{0}".format(i)), exist_ok=True)
+        os.makedirs(os.path.join(pure_sn_dir, "{0}".format(i)), exist_ok=True)
     os.makedirs(os.path.join(pure_sn_dir, 'metadata'), exist_ok=True)
 
     for i in tqdm(model_names):
@@ -435,7 +435,7 @@ if generate_supernova == True:
             #Convert dusty_sn_spectra to 1D array of float 16
             output_sn_spectra = norm_sn_spectra.astype('float16')
 
-            sn_type_path = ("type_{0}".format(sn_types[np.where(model_names == i)[0][0]]))
+            sn_type_path = ("{0}".format(sn_types[np.where(model_names == i)[0][0]]))
             sn_template_file_name = ('{0}_{1}.txt'.format(i, tau_idx))
 
 
@@ -476,7 +476,6 @@ if generate_supernova == True:
 sn_types = os.listdir('all_templates/sne_superfit')
 if ".DS_Store" in sn_types:
     sn_types.remove(".DS_Store")
-print(sn_types)
 
 for sn_type in tqdm(sn_types):
     #Check to see if the type directory already exists
@@ -566,7 +565,6 @@ for sn_type in tqdm(sn_types):
 sn_types = os.listdir('all_templates/sne_supersnid')
 #Import the supersnid metadata
 supersnid_metadata = pd.read_csv('all_templates/sne_supersnid/supersnid_metadata.csv')
-print(sn_types)
 
 if ".DS_Store" in sn_types:
     sn_types.remove(".DS_Store")
@@ -672,8 +670,8 @@ print('-----------------------------')
 template_wl = np.arange(3800, 8015, 15)
 
 #Generate other transient templates
-transient_types = np.array(['CV'])
-galactic_source = np.array(['Y'])
+transient_types = np.array([])
+galactic_source = np.array([])
 
 for i in transient_types:
     os.makedirs(os.path.join(pure_sn_dir, i), exist_ok=True)

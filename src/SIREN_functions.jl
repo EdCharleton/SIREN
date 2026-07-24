@@ -13,13 +13,11 @@ module ClassifierFunctions
     using ProgressBars
     using Pkg
     using DustExtinction    
-    using BenchmarkTools
     using DataStructures
     using Pkg
     using Interpolations: Linear, Gridded, interpolate
     using LsqFit
     using LaTeXStrings
-    using ProfileView
     using Pkg
     using CSV
     using FITSIO
@@ -34,7 +32,7 @@ module ClassifierFunctions
     try; import Metal; catch; end
 
     is_metal_loaded = false
-    use_gpu = true
+    use_gpu = false
 
     function __init__()
         global is_metal_loaded
@@ -84,7 +82,7 @@ module ClassifierFunctions
         #Get the arguments when running in command line mode
         s = ArgParseSettings()
         @add_arg_table! s begin
-            "--file", "-f"
+            "--file_path", "-f"
                 help = "Path to the input data file/directory (see --batch flag)"
                 arg_type = String
                 required = true
@@ -93,44 +91,266 @@ module ClassifierFunctions
                 help = "Redshift value (or 'None' for search)"
                 arg_type = String
                 default = "None"
+            "--z_min"
+                help = "Minimum redshift SIREN fits"
+                arg_type = Float64
+                default = 0.0
+            
+            "--z_max"
+                help = "Maximum redshift SIREN fits"
+                arg_type = Float64
+                default = 0.8
+
+            "--z_step"
+                help = "Redshift step size for SIREN fits"
+                arg_type = Float64
+                default = 0.01
     
             "--batch", "-b"
                 help = "Flag to run in batch mode (multiple at once)"
                 arg_type = Bool
                 default = false
+
+            "--metadata_path"
+                help = "Path to the metadata CSV file containing prior info for the spectra to fit such as redshifts"
+                arg_type = String
+                default = "None"
+
+            "--type", "-t"
+                help = "The type of transient to force only those fits"
+                arg_type = String
+                default = "None"  # Default is 'no'
             
             "--remove_telluric"
                 help = "Flag to remove telluric absorption at telluric wavelengths"
                 arg_type = String
                 default = "N"  # Default is 'no'
     
-            "--galactic_source"
+            "--galactic_source", "-g"
                 help = "Flag indicating whether the source is galactic"
                 arg_type = String
                 default = "N"  # Default is 'no'
     
-            "--show_plot"
+            "--display_plot", "-d"
                 help = "Flag to show the plot"
                 arg_type = Bool
-                default = false  # Default is 'no'
+                default = true  # Default is true
     
-            "--minimum_overlap"
+            "--minimum_overlap", "-m"
                 help = "Minimum overlap between the target and templates, units of %"
                 arg_type = Float64
                 default = 75  # Default is '0.0'
+
+            "--save_path", "-s"
+                help = "Directory to save output plots and JSON file"
+                arg_type = String
+                default = "classifications"
 
             "--use_gpu"
                 help = "Flag to enable/disable GPU acceleration"
                 arg_type = Bool
                 default = false
-            "--savepath"
-                help = "Directory to save output plots"
-                arg_type = String
-                default = "classifications"
+
         end
     
         return parse_args(ARGS, s)
     end
+
+    # ── Column name aliases ───────────────────────────────────────────────────────
+    # Maps canonical parameter names to a list of accepted column name variants.
+    # Case-insensitive matching is applied on top of these, so "Redshift" and
+    # "REDSHIFT" both resolve without needing separate entries here.
+    const COLUMN_ALIASES = Dict{String, Vector{String}}(
+        "file_path"       => ["file", "file name", "file path", "path"],
+        "redshift"        => ["redshift", "z", "red_shift", "z_spec", "zspec", "z_phot", "redshift_value"],
+        "z_min"           => ["z_min", "zmin", "redshift_min", "min_z", "minimum_z"],
+        "z_max"           => ["z_max", "zmax", "redshift_max", "max_z", "maximum_z"],
+        "z_step"          => ["z_step", "zstep", "redshift_step", "step_z", "dz"],
+        "remove_telluric" => ["remove_telluric", "telluric", "remove_tell", "tell", "telluric_removal"],
+        "galactic_source" => ["galactic_source", "galactic", "gal_source", "is_galactic"],
+        "minimum_overlap" => ["minimum_overlap", "min_overlap", "overlap", "min_overlap_pct"],
+        "type" => ["type", "sn_type"],
+    )
+
+    # ── Default values (must match parse_command_line_args defaults) ──────────────
+    const BATCH_DEFAULTS = Dict{String, Any}(
+        "redshift"        => "None",
+        "z_min"           => 0.0,
+        "z_max"           => 0.8,
+        "z_step"          => 0.01,
+        "type"            => "None",
+        "remove_telluric" => "N",
+        "galactic_source" => "N",
+        "minimum_overlap" => 75.0,
+    )
+
+
+    # ── resolve_column ─────────────────────────────────────────────────────────────
+    # Returns the actual DataFrame column name that matches the canonical key,
+    # or nothing if no match is found.
+    function resolve_column(df_cols::Vector{String}, canonical::String)::Union{String, Nothing}
+        aliases = get(COLUMN_ALIASES, canonical, [canonical])
+        for alias in aliases
+            for col in df_cols
+                lowercase(strip(col)) == lowercase(strip(alias)) && return col
+            end
+        end
+        return nothing
+    end
+
+
+    # ── read_batch_metadata ────────────────────────────────────────────────────────
+    # Reads the metadata CSV and returns a Dict mapping target name → per-row params.
+    # Missing columns fall back to BATCH_DEFAULTS. Empty cells also fall back.
+    # Logs one warning per missing column at load time (not per-row).
+    function read_batch_metadata(metadata_path::String)
+
+        if !isfile(metadata_path)
+            printstyled("Warning: ", color=:yellow)
+            println("Metadata file not found at '$metadata_path' — using global defaults for all spectra.")
+            return nothing
+        end
+
+        df = try
+            CSV.read(metadata_path, DataFrame)
+        catch e
+            printstyled("Warning: ", color=:yellow)
+            println("Could not read metadata CSV '$metadata_path': $e")
+            return nothing
+        end
+
+        df_cols = string.(names(df))
+
+        # ── Resolve column mapping once at load time ──────────────────────────────
+        col_map = Dict{String, Union{String, Nothing}}()
+        for canonical in keys(BATCH_DEFAULTS)
+            resolved = resolve_column(df_cols, canonical)
+            col_map[canonical] = resolved
+            if isnothing(resolved)
+                printstyled("  Note: ", color=:cyan)
+                println("Metadata column '$canonical' not found — will use default ($(BATCH_DEFAULTS[canonical])) for all rows.")
+            end
+        end
+
+        # ── File name column (required) ───────────────────────────────────────────
+        name_col = resolve_column(df_cols, "file_path")
+        if isnothing(name_col)
+            # Try a broader search for anything that looks like a name column
+            name_col = resolve_column(df_cols, "name")
+            isnothing(name_col) && (name_col = resolve_column(df_cols, "filename"))
+            isnothing(name_col) && (name_col = resolve_column(df_cols, "sn_name"))
+            isnothing(name_col) && (name_col = resolve_column(df_cols, "object"))
+            isnothing(name_col) && (name_col = resolve_column(df_cols, "id"))
+        end
+
+        if isnothing(name_col)
+            printstyled("Warning: ", color=:yellow)
+            println("No filename/name column found in metadata CSV. Expected one of: file, name, filename, sn_name, object, id.")
+            return nothing
+        end
+
+        # ── Build lookup dict: stripped_name → param dict ─────────────────────────
+        result = Dict{String, Dict{String, Any}}()
+        for row in eachrow(df)
+            raw_name = string(row[name_col])
+            isempty(raw_name) || raw_name == "missing" && continue
+            key = splitext(strip(raw_name))[1]   # strip extension so "SN2024a.fits" → "SN2024a"
+
+            params = Dict{String, Any}()
+
+            for (canonical, col) in col_map
+                default_val = BATCH_DEFAULTS[canonical]
+
+                if isnothing(col)
+                    params[canonical] = default_val
+                    continue
+                end
+
+                raw = row[col]
+
+                # Treat missing, empty string, "none", "nan" as "use default"
+                is_empty = ismissing(raw) ||
+                        (raw isa AbstractString && lowercase(strip(string(raw))) in ("", "none", "nan", "n/a", "na"))
+
+                if is_empty
+                    params[canonical] = default_val
+                    continue
+                end
+
+                # ── Type-coerce to match expected type ────────────────────────────
+                params[canonical] = try
+                    if default_val isa Float64
+                        parse(Float64, string(raw))
+                    elseif default_val isa Bool
+                        v = lowercase(strip(string(raw)))
+                        v in ("true", "yes", "y", "1")
+                    else
+                        # String params (redshift = "None" or a number, telluric = "Y"/"N")
+                        str = strip(string(raw))
+                        if canonical == "redshift"
+                            lowercase(str) in ("none", "n/a", "na") ? "None" : string(parse(Float64, str))
+                        else
+                            str
+                        end
+                    end
+                catch
+                    # z_min and z_max are irrelevant when a specific redshift is
+                    # already set for this row — suppress the warning in that case.
+                    if canonical in ("z_min", "z_max", "z_step")
+                        z_col = col_map["redshift"]
+                        has_redshift = !isnothing(z_col) && begin
+                            r = row[z_col]
+                            !ismissing(r) &&
+                            !(r isa AbstractString && lowercase(strip(string(r))) in ("", "none", "nan", "n/a", "na"))
+                        end
+                        has_redshift && (default_val; continue)
+                    end
+
+                    printstyled("  Warning: ", color=:yellow)
+                    println("Could not parse '$raw' for column '$canonical' (row: $key) — using default $(default_val).")
+                    default_val
+                end
+            end
+
+            result[key] = params
+        end
+
+        println("Loaded metadata for $(length(result)) spectra from '$metadata_path'.")
+        return result
+    end
+
+
+# ── get_target_params ──────────────────────────────────────────────────────────
+# Returns the metadata dict for a given target name, falling back to global
+# CLI/REPL values if the name isn't in the metadata or metadata wasn't loaded.
+# global_params should be a Dict with the same canonical keys as BATCH_DEFAULTS.
+function get_target_params(
+        target_name::String,
+        batch_metadata::Union{Dict, Nothing},
+        global_params::Dict{String, Any})::Dict{String, Any}
+
+    isnothing(batch_metadata) && return global_params
+
+    # Try exact match first, then strip extension
+    key = splitext(basename(target_name))[1]
+    row = get(batch_metadata, key, nothing)
+    if isnothing(row)
+        row = get(batch_metadata, target_name, nothing)
+    end
+
+    if isnothing(row)
+        printstyled("  Note: ", color=:cyan)
+        println("'$target_name' not found in metadata — using global defaults.")
+        return global_params
+    end
+
+    # Merge: row values take priority over global_params, global_params over BATCH_DEFAULTS
+    merged = copy(global_params)
+    for (k, v) in row
+        merged[k] = v
+    end
+    return merged
+end
 
     
     function find_closest_value(array, value)
@@ -176,173 +396,6 @@ module ClassifierFunctions
         return content, imported
     end
 
-function plot_best_fit(SN_ID, z,
-    best_indices, transient_template_info, transient_template_names,
-    host_template_info, host_template_names,
-    original_flux, original_flux_σ, original_λ,
-    best_fit_arr, best_fit_λ_arr, transient_component_arr, host_component_arr,
-    fitted_spectra_arr, fitted_spectra_σ_arr, fitted_spectra_λ_arr,
-    chi_squared_red_arr, redshift_vals,
-    emission_lines_arr, emission_lines_λ_arr,
-    savepath = "classifications", show_plot = false)
-
-    best = argmin(chi_squared_red_arr)
-
-    if best_indices[best, 1] == 0
-        println("--------------------")
-        printstyled("ERROR: ", color=:red)
-        println("plot_best_fit: No valid fit found for $SN_ID")
-        println("--------------------")
-        return nothing
-    end
-
-    t_idx = best_indices[best, 1]
-    h_idx = best_indices[best, 2]
-
-    transient_type = transient_template_info["Type"][transient_template_names[t_idx]]
-    host_type      = host_template_info["HG Type"][host_template_names[h_idx]]
-    phase          = get(transient_template_info["tau"], transient_template_names[t_idx], "N/A")
-    chi_red        = round(chi_squared_red_arr[best], digits=3)
-    z_best         = round(Float64(redshift_vals[best]), digits=3)
-
-    # ── Data ─────────────────────────────────────────────────────────────────
-    obs_λ_raw    = collect(Float64, original_λ)
-    obs_flux_raw = collect(Float64, original_flux)
-    obs_err_raw  = collect(Float64, original_flux_σ)
-
-    # Filter NaNs and infs from observed spectrum before plotting.
-    # Without this, Plots.jl draws the ribbon polygon across gaps,
-    # producing diagonal lines across the entire figure.
-    obs_valid    = isfinite.(obs_flux_raw) .& isfinite.(obs_err_raw) .& (obs_err_raw .> 0)
-    obs_λ        = obs_λ_raw[obs_valid]
-    obs_flux     = obs_flux_raw[obs_valid]
-    obs_err      = obs_err_raw[obs_valid]
-
-    # Binned spectrum — filter NaNs for the same reason
-    binned_λ_raw    = collect(Float64, fitted_spectra_λ_arr[best]) .* (1 + z_best)
-    binned_flux_raw = collect(Float64, fitted_spectra_arr[best])
-    binned_err_raw  = collect(Float64, fitted_spectra_σ_arr[best])
-
-    binned_valid = isfinite.(binned_flux_raw) .& isfinite.(binned_err_raw)
-    binned_λ     = binned_λ_raw[binned_valid]
-    binned_flux  = binned_flux_raw[binned_valid]
-    binned_err   = binned_err_raw[binned_valid]
-
-    # Best fit and components
-    fit_λ          = collect(Float64, best_fit_λ_arr[best]) .* (1 + z_best)
-    best_fit       = collect(Float64, best_fit_arr[best])
-    transient_comp = collect(Float64, transient_component_arr[best])
-    host_comp      = collect(Float64, host_component_arr[best])
-
-    em_lines   = emission_lines_arr[best]
-    em_lines_λ = emission_lines_λ_arr[best]
-
-    display_name = splitext(splitpath(SN_ID)[end])[1]
-
-    # ── Y-axis limits ─────────────────────────────────────────────────────────
-    finite_flux = filter(isfinite, obs_flux)
-    y_lo = quantile(finite_flux, 0.01)
-    y_hi = quantile(finite_flux, 0.99) * 1.3
-
-    # ── Clamp ribbon heights to prevent spike artifacts ───────────────────────
-    # Large error values near spectral spikes cause the ribbon to extend far
-    # beyond the y-axis clip, producing additional diagonal fill artifacts.
-    ribbon_obs    = clamp.(min.(obs_err,    (y_hi - y_lo) * 0.1), 0.0, max.(y_hi .- obs_flux,    0.0))
-    ribbon_binned = clamp.(min.(binned_err, (y_hi - y_lo) * 0.1), 0.0, max.(y_hi .- binned_flux, 0.0))
-
-    # ── Plot — all rendering errors suppressed via redirect_stderr ────────────
-    p = redirect_stderr(devnull) do
-        _p = plot(
-            size           = (1600, 900),
-            dpi            = 300,
-            grid           = false,
-            guidefontsize  = 22,
-            tickfontsize   = 16,
-            titlefont      = 22,
-            legendfontsize = 16,
-            left_margin    = 9Plots.mm,
-            bottom_margin  = 10Plots.mm,
-            top_margin     = 10Plots.mm,
-            right_margin   = 4Plots.mm
-        )
-
-        # 1. Observed spectrum (NaN-filtered) + clamped ribbon
-        plot!(_p,
-            obs_λ, obs_flux,
-            ribbon    = ribbon_obs,
-            fillalpha = 0.15,
-            fillcolor = "#C8C8C8",
-            linecolor = "#909090",
-            linewidth = 0.8,
-            label     = "Observed ($display_name)",
-            xlabel    = "Wavelength (Å)",
-            ylabel    = "Flux (arb. units)",
-            legend    = :topright,
-            ylims     = (y_lo, y_hi)
-        )
-
-        # 2. Binned + emission-line-removed spectrum
-        plot!(_p,
-            binned_λ, binned_flux,
-            ribbon    = ribbon_binned,
-            fillalpha = 0.10,
-            fillcolor = :black,
-            linecolor = :black,
-            linewidth = 1.4,
-            label     = "Binned + Lines Removed"
-        )
-
-        # 3. Best fit
-        plot!(_p,
-            fit_λ, best_fit,
-            linecolor = :red,
-            linewidth = 1.8,
-            label     = "Best Fit ($transient_type + $host_type)"
-        )
-
-        # 4. Transient component
-        plot!(_p,
-            fit_λ, transient_comp,
-            linecolor = :royalblue,
-            linewidth = 1.2,
-            linestyle = :dash,
-            label     = "Transient ($transient_type)"
-        )
-
-        # 5. Host component
-        plot!(_p, fit_λ, host_comp, linecolor = :darkorange, linewidth = 1.2, linestyle = :dash, label = "Host Galaxy ($host_type)")
-
-        # 6. Emission line markers
-        if !isempty(em_lines_λ)
-            for (λ_em, name) in zip(em_lines_λ, em_lines)
-                vline!(_p, [λ_em],
-                    linecolor = :green,
-                    linewidth = 0.8,
-                    linestyle = :dot,
-                    label     = ""
-                )
-                annotate!(_p, λ_em, y_hi * 0.92,
-                    text(string(name), :green, :center, 7))
-            end
-        end
-
-        title!(_p, "$display_name  |  z = $z_best  | type = $transient_type |  Phase = $phase days")
-        _p
-    end
-
-    if show_plot
-        display(p)
-    end
-
-    if !isnothing(savepath)
-        outpath = joinpath(savepath, "$(display_name)_best_fit.png")
-        redirect_stderr(devnull) do
-            savefig(p, outpath)
-        end
-        return outpath
-    end
-    return p
-end
 
 
     function calculate_spectral_error(spectra, spectra_λ, window_size::Int)
@@ -406,7 +459,6 @@ function read_target_spectra(directory::String, delimiter::Char = ',',
         found
     else
         isdir(directory) && error("Single-file mode: expected a file path, got a directory. Pass batch_mode=true to scan a directory.")
-        println("Loading in Target Spectra...")
         [directory]
     end
 
@@ -790,7 +842,6 @@ end
         #convert to indexes - find out many indices correspond to the above window
         indexes = findall(x -> x in (input_spectra_λ[1] - wavelength_window):(input_spectra_λ[1] + wavelength_window), input_spectra_λ)
         window_indexes = length(indexes)
-        print(window_indexes)
 
         #Sigma clipping threshold for identifying emission lines
         σ_threshold = 3.2
@@ -918,11 +969,12 @@ function chi_squared_classifier(
         host_template_info,      host_template_names,      host_template_files,
         transient_template_λ,   host_template_λ,
         target_spectra,         target_λ,                  target_spectra_σ,
-        SN_ID, target_redshift, telluric_λ,
+        SN_ID, target_redshift, z_min, z_max, z_step, input_type, telluric_λ,
         batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50;
         master_grid = nothing, T_master = nothing, MT_master = nothing,
         H_master = nothing, MH_master = nothing,
-        Rv = 3.1, Av_min = -3.0, Av_max = 3.0, Av_step = 0.5, savepath = "classifications")
+        Rv = 3.1, Av_min = -3.0, Av_max = 3.0, Av_step = 0.5, savepath = "classifications",
+        N_top = 100)
 
     use_prebuilt = !isnothing(T_master)
 
@@ -950,6 +1002,9 @@ function chi_squared_classifier(
     best_Av_arr   = zeros(Float32, n_types)
     best_z_index  = zeros(Int,     n_types)
     contam_array  = Vector{Float32}(undef, n_types)
+
+    top_fits = Vector{Dict{String,Any}}()
+    sizehint!(top_fits, N_top)
 
     emission_lines_arr   = Vector{Vector{Float64}}(undef, n_types)
     emission_lines_λ_arr = Vector{Vector{Float64}}(undef, n_types)
@@ -991,13 +1046,7 @@ function chi_squared_classifier(
         nothing
     end
 
-    # ── Redshift grid ─────────────────────────────────────────────────────────
-    redshift_max = if ismissing(target_redshift) || target_redshift == "None"
-        0.8
-    else
-        target_redshift > 0.8 ? target_redshift : 0.8
-    end
-    redshift_range = collect(0.00:0.01:redshift_max)
+    redshift_range = collect(z_min:z_step:z_max)
     N_z = length(redshift_range)
 
     galactic_transients = Set(
@@ -1015,6 +1064,31 @@ function chi_squared_classifier(
     type_groups = [Int[] for _ in 1:n_types]
     for t_idx in 1:N_T
         push!(type_groups[type_indices[t_idx]], t_idx)
+    end
+
+    # ── Type constraint ───────────────────────────────────────────────────────
+    # If input_type is set, restrict the search to only templates of that type.
+    # Matching is case-insensitive. Falls back gracefully if no templates match.
+    has_type_constraint = !ismissing(input_type) &&
+                          input_type != "None"   &&
+                          !isempty(strip(string(input_type)))
+
+    allowed_t_indices = if has_type_constraint
+        normalised = lowercase(strip(string(input_type)))
+        allowed = Set{Int}(
+            t_idx for t_idx in 1:N_T
+            if lowercase(strip(transient_template_info["Type"][transient_template_names[t_idx]])) == normalised
+        )
+        if isempty(allowed)
+            printstyled("Warning: ", color=:yellow)
+            println("input_type='$input_type' matched no templates — ignoring type constraint.")
+            Set{Int}(1:N_T)
+        else
+            println("Type constraint active: $(length(allowed)) template(s) of type '$input_type'.")
+            allowed
+        end
+    else
+        Set{Int}(1:N_T)
     end
 
     # ── Pre-compute all target resamples across the redshift grid ─────────────
@@ -1082,14 +1156,12 @@ function chi_squared_classifier(
             round(z, digits=2) != round(target_redshift, digits=2) && continue
         end
 
-        # Pre-compute/extract z-specific variables ONCE per z to save time
         if use_prebuilt
             Y_gpu = target_f_stack_gpu[:, iz]
             W_gpu = target_w_stack_gpu[:, iz]
-            # WT is independent of Av, compute it once for this z
-            WT = W_gpu .* MT_master_gpu
+            WT    = W_gpu .* MT_master_gpu
         else
-            # ── Legacy path: Redshifting done ONCE per z ────────────────────
+            # ── Legacy path ──────────────────────────────────────────────────
             redshifted_flux, redshifted_flux_σ, redshifted_λ,
             transient_templates, host_templates,
             transient_template_λ_z, host_template_λ_z,
@@ -1116,7 +1188,6 @@ function chi_squared_classifier(
             target_w_l[target_valid] .= 1.0f0 ./ (frozen_flux_σ[target_valid].^2)
             target_f_l[target_valid] .= frozen_flux[target_valid]
 
-            # We create base matrices so we don't double-apply extinction in the Av loop
             T_mat_base  = zeros(Float32, N_lam, N_T_l)
             MT_mat      = zeros(Float32, N_lam, N_T_l)
             H_mat_base  = zeros(Float32, N_lam, N_H_l)
@@ -1160,13 +1231,12 @@ function chi_squared_classifier(
                 end
             end
 
-            # Push statics to GPU once per z
             Y_gpu = to_gpu(target_f_l)
             W_gpu = to_gpu(target_w_l)
             MT_g  = to_gpu(MT_mat)
             MH_g  = to_gpu(MH_mat)
             WT    = W_gpu .* MT_g
-            
+
             ext_law_base = Float32.(ext_law.(frozen_λ))
         end
 
@@ -1189,7 +1259,6 @@ function chi_squared_classifier(
                 S_oo_gpu  = transpose(WT .* (Y_gpu.^2)) * MH_master_gpu
                 N_pts_gpu = transpose(MT_master_gpu) * MH_master_gpu
             else
-                # Apply extinction to the clean base matrices
                 ext_curve_cpu = Float32.(10.0 .^ (-0.4f0 .* Float32(Av) .* ext_law_base))
                 T_mat = T_mat_base .* ext_curve_cpu
                 H_mat = H_mat_base .* ext_curve_cpu
@@ -1225,7 +1294,6 @@ function chi_squared_classifier(
 
             chi_sq_red_gpu .= chi_sq_gpu ./ max.(N_pts_gpu, 1.0f0)
 
-            # ── Immediate CPU tracker update for this specific z slice ────────
             chi_pass_vec  = vec(to_cpu(chi_sq_red_gpu))
             npts_pass_vec = vec(to_cpu(N_pts_gpu))
 
@@ -1254,11 +1322,12 @@ function chi_squared_classifier(
         best_t   = 0; best_h = 0; best_iz = 0
 
         for iz in 1:N_z
-            z          = redshift_range[iz]
-            N_pts_z    = N_pts_target_z[iz]
+            z       = redshift_range[iz]
+            N_pts_z = N_pts_target_z[iz]
 
             for t_idx in t_indices_for_type
                 t_idx in galactic_transients && z != 0.0 && continue
+                t_idx in allowed_t_indices || continue   # ← type constraint
 
                 if overlap_matrix[t_idx, iz] / max(N_pts_z, 1.0f0) < (minimum_overlap / 100.0f0)
                     continue
@@ -1284,6 +1353,69 @@ function chi_squared_classifier(
             best_Av_arr[t_type_index]         = av_3d[best_t, best_h, best_iz]
             redshift_vals[t_type_index]        = redshift_range[best_iz]
             best_z_index[t_type_index]         = best_iz
+        end
+    end
+
+    # ── Extract top N_top fits globally ──────────────────────────────────────
+    let
+        flat_chi  = vec(best_chi_tracker)
+        flat_av   = vec(best_av_tracker)
+        flat_npts = vec(best_npts_tracker)
+
+        valid_flat = falses(N_T * N_H * N_z)
+        for iz in 1:N_z
+            z_val   = redshift_range[iz]
+            N_pts_z = N_pts_target_z[iz]
+            for t_idx in 1:N_T
+                t_idx in galactic_transients && z_val != 0.0 && continue
+                t_idx in allowed_t_indices || continue   # ← type constraint
+                overlap_matrix[t_idx, iz] / max(N_pts_z, 1.0f0) < (minimum_overlap / 100.0f0) && continue
+                for h_idx in 1:N_H
+                    th_flat  = (h_idx - 1) * N_T + t_idx
+                    flat_idx = th_flat + (iz - 1) * (N_T * N_H)
+                    valid_flat[flat_idx] = true
+                end
+            end
+        end
+
+        candidate_idxs  = findall(valid_flat .& isfinite.(flat_chi))
+        seen_transients = Set{Tuple{String, Float64}}()
+
+        if !isempty(candidate_idxs)
+            n_cand     = min(N_top * 10, length(candidate_idxs))
+            cand_order = partialsortperm(flat_chi[candidate_idxs], 1:n_cand)
+
+            global_rank = 0
+            for ci in cand_order
+                global_rank >= N_top && break
+
+                flat_idx = candidate_idxs[ci]
+                th_flat  = mod1(flat_idx, N_T * N_H)
+                iz       = (flat_idx - 1) ÷ (N_T * N_H) + 1
+                t_idx    = mod1(th_flat, N_T)
+                h_idx    = (th_flat - 1) ÷ N_T + 1
+
+                z_val  = redshift_range[iz]
+                Av_val = Float64(flat_av[flat_idx])
+
+                transient_key = (transient_template_names[t_idx], Float64(z_val))
+                transient_key in seen_transients && continue
+                push!(seen_transients, transient_key)
+
+                global_rank += 1
+                push!(top_fits, Dict{String,Any}(
+                    "rank"               => global_rank,
+                    "chi_sq_red"         => Float64(flat_chi[flat_idx]),
+                    "transient_type"     => transient_template_info["Type"][transient_template_names[t_idx]],
+                    "transient_template" => transient_template_names[t_idx],
+                    "host_type"          => host_template_info["HG Type"][host_template_names[h_idx]],
+                    "host_template"      => host_template_names[h_idx],
+                    "redshift"           => Float64(z_val),
+                    "Av"                 => Av_val,
+                    "E_B_V"              => Av_val / Float64(Rv),
+                    "phase"              => get(transient_template_info["tau"], transient_template_names[t_idx], "N/A")
+                ))
+            end
         end
     end
 
@@ -1403,24 +1535,346 @@ function chi_squared_classifier(
         best_type = top_fit_types[best_type_idx]
     end
 
-    #If the savepath directory doesn't exist, create it
-    if !isdir(savepath)
-        mkpath(savepath)
+    return norm_arr, chi_squared_red_arr, best_redshift, best_type, top_fits
+end
+# ── build_fit_plot ────────────────────────────────────────────────────────
+# Reconstructs and returns a Plots.jl figure for a single entry from top_fits.
+# Used by the interactive viewer in SIREN.jl to cycle through top results.
+# T/MT/H/MH_master_cpu must be plain CPU Arrays (not GPU arrays).
+function build_fit_plot(
+        fit::Dict{String,Any},
+        target_name::String,
+        original_flux, original_flux_σ, original_λ,
+        sn_template_names,
+        hg_template_names,
+        T_master_cpu, MT_master_cpu,
+        H_master_cpu, MH_master_cpu,
+        master_grid;
+        Rv::Float64 = 3.1, z_step::Float64 = 0.01)
+
+    z_val   = Float32(fit["redshift"])
+    Av_val  = Float32(fit["Av"])
+    t_name  = fit["transient_template"]
+    h_name  = fit["host_template"]
+    t_type  = fit["transient_type"]
+    h_type  = fit["host_type"]
+    phase   = fit["phase"]
+    rank    = fit["rank"]
+    chi_red = round(fit["chi_sq_red"], digits=3)
+
+    t_idx = findfirst(==(t_name), sn_template_names)
+    h_idx = findfirst(==(h_name), hg_template_names)
+    (isnothing(t_idx) || isnothing(h_idx)) && return nothing
+
+    # Wavelength window in rest frame for this z
+    N_lam_master = length(master_grid)
+    bottom_λ  = 3800.0f0 / (1.0f0 + z_val)
+    top_λ     = 8000.0f0 / (1.0f0 + z_val)
+    row_start = max(1, round(Int, (bottom_λ - 2315.0f0) / 15.0f0) + 1)
+    row_end   = min(N_lam_master, round(Int, (top_λ  - 2315.0f0) / 15.0f0) + 1)
+    frozen_λ_win = master_grid[row_start:row_end]
+
+    # Apply extinction to template columns
+    ext_law   = F99(Rv = Float32(Rv))
+    ext_curve = Float32.(10.0 .^ (-0.4f0 .* Av_val .* Float32.(ext_law.(frozen_λ_win))))
+
+    T_col  = T_master_cpu[row_start:row_end, t_idx]  .* ext_curve
+    H_col  = H_master_cpu[row_start:row_end, h_idx]  .* ext_curve
+    MT_col = copy(MT_master_cpu[row_start:row_end, t_idx])
+    MH_col = copy(MH_master_cpu[row_start:row_end, h_idx])
+
+    # Resample observed spectrum to the rest-frame master grid at this z
+    de_redshifted_λ = Float64.(original_λ) ./ (1.0 + z_val)
+    t_on_grid, t_σ_on_grid = spectral_resampler(
+        Float64.(master_grid), de_redshifted_λ,
+        Float64.(original_flux), Float64.(original_flux_σ))
+
+    target_f_win = Float32.(t_on_grid[row_start:row_end])
+    target_σ_win = Float32.(t_σ_on_grid[row_start:row_end])
+    target_w_win = zeros(Float32, length(frozen_λ_win))
+
+    valid = .!isnan.(target_f_win) .& .!isnan.(target_σ_win) .& (target_σ_win .> 0) .&
+            (frozen_λ_win .>= bottom_λ) .& (frozen_λ_win .<= top_λ)
+
+    target_w_win[valid] .= 1.0f0 ./ target_σ_win[valid].^2
+    MT_col[.!valid] .= 0.0f0
+    MH_col[.!valid] .= 0.0f0
+
+    valid_mask = (target_w_win .> 0) .& (MT_col .> 0) .& (MH_col .> 0)
+    sum(valid_mask) < 5 && return nothing
+
+    Y_v = target_f_win[valid_mask]
+    W_v = target_w_win[valid_mask]
+    T_v = T_col[valid_mask]
+    H_v = H_col[valid_mask]
+
+    s_ss = sum(W_v .* T_v.^2);  s_hh = sum(W_v .* H_v.^2)
+    s_sh = sum(W_v .* T_v .* H_v)
+    s_os = sum(W_v .* Y_v .* T_v);  s_oh = sum(W_v .* Y_v .* H_v)
+
+    det_win = s_ss * s_hh - s_sh^2
+    abs(det_win) < 1e-10 && return nothing
+
+    B = (s_os * s_hh - s_oh * s_sh) / det_win   # transient scale
+    C = (s_oh * s_ss - s_os * s_sh) / det_win   # host scale
+    (B < 0 || C < 0) && return nothing
+
+    # Observer-frame wavelengths for plotting
+    plot_λ         = Float64.(frozen_λ_win[valid_mask]) .* (1.0 + z_val)
+    transient_comp = Float64.(T_col[valid_mask]) .* B
+    host_comp      = Float64.(H_col[valid_mask]) .* C
+    best_f         = transient_comp .+ host_comp
+
+    # Raw observed spectrum (NaN-filtered)
+    obs_λ_raw    = collect(Float64, original_λ)
+    obs_flux_raw = collect(Float64, original_flux)
+    obs_err_raw  = collect(Float64, original_flux_σ)
+    obs_valid    = isfinite.(obs_flux_raw) .& isfinite.(obs_err_raw) .& (obs_err_raw .> 0)
+    obs_λ    = obs_λ_raw[obs_valid]
+    obs_flux = obs_flux_raw[obs_valid]
+    obs_err  = obs_err_raw[obs_valid]
+
+    # Binned observed (valid pixels only, observer frame)
+    binned_flux_raw = Float64.(target_f_win[valid_mask])
+    binned_err_raw  = Float64.(target_σ_win[valid_mask])
+    binned_valid    = isfinite.(binned_flux_raw) .& isfinite.(binned_err_raw)
+    binned_λ    = plot_λ[binned_valid]
+    binned_flux = binned_flux_raw[binned_valid]
+    binned_err  = binned_err_raw[binned_valid]
+
+    display_name = splitext(basename(target_name))[1]
+    z_precision  = round(Int, -log10(z_step)) +1 #Changes with the z_step used in fitting.
+    z_str        = round(Float64(z_val), digits=z_precision)
+    av_str       = round(Float64(Av_val), digits=1)
+
+    finite_obs   = filter(isfinite, obs_flux)
+    host_pos     = host_comp[host_comp .> 0]
+    trans_pos    = transient_comp[transient_comp .> 0]
+    template_min = (isempty(host_pos) || isempty(trans_pos)) ? minimum(finite_obs) :
+                    minimum([host_pos; trans_pos])
+    y_lo = min(minimum(finite_obs), template_min) * 0.7
+    y_hi = quantile(finite_obs, 0.99) * 1.3
+
+    ribbon_obs    = clamp.(min.(obs_err,    (y_hi-y_lo)*0.1), 0.0, max.(y_hi .- obs_flux,    0.0))
+    ribbon_binned = clamp.(min.(binned_err, (y_hi-y_lo)*0.1), 0.0, max.(y_hi .- binned_flux, 0.0))
+
+    p = redirect_stderr(devnull) do
+        _p = plot(
+            size=(1600, 900), dpi=300, grid=false,
+            guidefontsize=22, tickfontsize=16, titlefont=22, legendfontsize=16,
+            left_margin=9*Plots.mm, bottom_margin=10*Plots.mm,
+            top_margin=10*Plots.mm, right_margin=4*Plots.mm)
+
+        plot!(_p, obs_λ, obs_flux,
+            ribbon=ribbon_obs, fillalpha=0.15, fillcolor="#C8C8C8",
+            linecolor="#909090", linewidth=0.8,
+            label="Observed ($display_name)",
+            xlabel="Wavelength (Å)", ylabel="Flux (arb. units)",
+            legend=:topright, ylims=(y_lo, y_hi))
+
+        plot!(_p, binned_λ, binned_flux,
+            ribbon=ribbon_binned, fillalpha=0.10, fillcolor=:black,
+            linecolor=:black, linewidth=1.4, label="Binned + Lines Removed")
+
+        plot!(_p, plot_λ, best_f,
+            linecolor=:red, linewidth=1.8,
+            label="Fit #$rank  ($t_type + $h_type)  χ²ᵣ=$chi_red")
+
+        plot!(_p, plot_λ, transient_comp,
+            linecolor=:royalblue, linewidth=1.2, linestyle=:dash,
+            label="Transient ($t_type)")
+
+        plot!(_p, plot_λ, host_comp,
+            linecolor=:darkorange, linewidth=1.2, linestyle=:dash,
+            label="Host Galaxy ($h_type)")
+
+        title!(_p, "$display_name  |  z=$z_str  |  type=$t_type  |  Phase=$phase days | Rank #$rank")
+        _p
     end
+    return p
+end
+# ── read_single_key ───────────────────────────────────────────────────────────
+# Reads one keypress from stdin without requiring Enter.
+# Puts the terminal in raw mode (via Julia's C runtime), reads the key(s),
+# then restores cooked mode. Arrow keys send a 3-byte ESC sequence:
+#   ESC (0x1b) → '[' (0x5b) → A/B/C/D
+# Only Base Julia is used — fully PackageCompiler-safe.
+function read_single_key()
+    ccall(:jl_tty_set_mode, Int32, (Ptr{Cvoid}, Int32), stdin.handle, 1)
+    key = :unknown
+    try
+        b = read(stdin, UInt8)
 
-    plotpath = plot_best_fit(
-        SN_ID, best_redshift,
-        best_indices, transient_template_info, transient_template_names,
-        host_template_info, host_template_names,
-        original_target_flux, original_target_flux_σ, original_target_λ,
-        best_fit_arr, best_fit_λ_arr, transient_component_arr, host_component_arr,
-        fitted_spectra_arr, fitted_spectra_σ_arr, fitted_spectra_λ_arr,
-        chi_squared_red_arr, redshift_vals,
-        emission_lines_arr, emission_lines_λ_arr,
-        savepath, show_plot)
+        if b == 0x1b                                # ESC — could be arrow key
+            sleep(0.04)                             # let the rest of the sequence arrive
+            if bytesavailable(stdin) >= 2
+                b2 = read(stdin, UInt8)
+                b3 = read(stdin, UInt8)
+                if b2 == UInt8('[')
+                    if     b3 == UInt8('C'); key = :right   # →
+                    elseif b3 == UInt8('D'); key = :left    # ←
+                    elseif b3 == UInt8('A'); key = :up      # ↑  (treat as next)
+                    elseif b3 == UInt8('B'); key = :down    # ↓  (treat as prev)
+                    end
+                end
+            else
+                key = :quit                         # bare ESC = quit
+            end
 
-    return norm_arr, chi_squared_red_arr, plotpath, best_redshift, best_type
+        elseif b == UInt8('q') || b == UInt8('Q'); key = :quit
+        elseif b == UInt8('s') || b == UInt8('S'); key = :save
+        elseif b == UInt8('g') || b == UInt8('G'); key = :goto
+        elseif b == 13 || b == 10;                  key = :right   # Enter = next
+        end
+    finally
+        ccall(:jl_tty_set_mode, Int32, (Ptr{Cvoid}, Int32), stdin.handle, 0)
+    end
+    return key
 end
 
-    export delete_folder_contents, adapative_binning, chi_squared_classifier, fit_sn_hg, fitting_func, fit_spectrum, read_target_spectra, read_template_files, trim_nans, calculate_B, calculate_C, calculate_spectral_error, parse_command_line_args
+
+# ── bring_plot_to_front ───────────────────────────────────────────────────────
+# On macOS, GR spawns a separate GKSTerm process for its window.
+# Clicking the terminal causes that window to lose focus.
+# This function uses a one-line AppleScript to re-raise it.
+# On non-macOS systems (or if the call fails) it silently does nothing.
+function bring_plot_to_front()
+    Sys.isapple() || return
+    try
+        run(`osascript -e 'tell application "System Events" to set frontmost of first process whose name is "GKSTerm" to true'`,
+            wait = true)
+    catch
+        # Window management is best-effort — silently ignore
+    end
+end
+
+
+function interactive_viewer(
+        top_fits, target_name,
+        original_flux, original_flux_σ, original_λ,
+        sn_template_names, hg_template_names,
+        T_master_cpu, MT_master_cpu,
+        H_master_cpu, MH_master_cpu,
+        master_grid, savepath;
+        Rv::Float64 = 3.1)
+
+    isempty(top_fits) && (println("No fits to display."); return)
+
+    n_fits       = length(top_fits)
+    current      = Ref(1)
+    message      = Ref("")          # one-shot message shown on the status line
+    first_render = Ref(true)
+
+    # Status block is always exactly 2 lines:
+    #   line 1 — fit info
+    #   line 2 — message / empty
+    STATUS_LINES = 2
+
+    function render_status(idx)
+        if !first_render[]
+            # Move cursor up to the top of the status block and wipe everything below
+            print("\e[$(STATUS_LINES)A\e[0J")
+        end
+        first_render[] = false
+
+        fit = top_fits[idx]
+        printstyled("  Fit $idx / $n_fits", color=:cyan)
+        print("  —  $(fit["transient_type"]) + $(fit["host_type"])")
+        print("  z=$(round(fit["redshift"], digits=2))")
+        print("  χ²ᵣ=$(round(fit["chi_sq_red"], digits=3))")
+        println("  Av=$(fit["Av"])")
+
+        if !isempty(message[])
+            printstyled("  $(message[])\n", color=:yellow)
+            message[] = ""          # clear after showing once
+        else
+            println()               # keep block height constant
+        end
+    end
+
+    # ── Static header — printed once ─────────────────────────────────────────
+    println("\n──────────────────────────────────────────────")
+    printstyled("Interactive Fit Viewer\n", color=:cyan)
+    println("  ← / →   previous / next fit")
+    println("  s        save current plot as PNG")
+    println("  g        jump to fit number")
+    println("  q / ESC  quit")
+    println("──────────────────────────────────────────────")
+
+    plot_cache = Dict{Int, Any}()
+
+    function get_plot(idx)
+        haskey(plot_cache, idx) && return plot_cache[idx]
+        p = build_fit_plot(
+            top_fits[idx], target_name,
+            original_flux, original_flux_σ, original_λ,
+            sn_template_names, hg_template_names,
+            T_master_cpu, MT_master_cpu, H_master_cpu, MH_master_cpu,
+            master_grid; Rv = Rv)
+        plot_cache[idx] = p
+        return p
+    end
+
+    while true
+        idx = current[]
+
+        render_status(idx)
+
+        p = get_plot(idx)
+        isnothing(p) ? (message[] = "Could not reconstruct this fit.") : display(p)
+
+        key = read_single_key()
+
+        if key == :right || key == :up
+            if idx < n_fits
+                current[] = idx + 1
+            else
+                message[] = "Already at last fit."
+            end
+
+        elseif key == :left || key == :down
+            if idx > 1
+                current[] = idx - 1
+            else
+                message[] = "Already at first fit."
+            end
+
+        elseif key == :goto
+            # The goto prompt expands below the status block temporarily.
+            # Reset first_render so the next cycle doesn't try to scroll back
+            # through the prompt text.
+            print("  Jump to fit number (1–$n_fits): ")
+            raw = strip(readline())
+            first_render[] = true
+            target_idx = tryparse(Int, raw)
+            if isnothing(target_idx) || target_idx < 1 || target_idx > n_fits
+                message[] = "Invalid number — enter a value between 1 and $n_fits."
+            else
+                current[] = target_idx
+            end
+
+        elseif key == :save
+            if isnothing(p)
+                message[] = "Nothing to save — fit could not be reconstructed."
+            else
+                display_name = splitext(basename(target_name))[1]
+                outpath = joinpath(savepath,
+                    "$(display_name)_fit_$(lpad(idx, 3, '0')).png")
+                redirect_stderr(devnull) do
+                    savefig(p, outpath)
+                end
+                message[] = "Saved: $outpath"
+            end
+
+        elseif key == :quit
+            print("\e[$(STATUS_LINES)A\e[0J")   # clear status on exit
+            println("  Viewer closed.")
+            break
+        end
+    end
+end
+
+
+    export delete_folder_contents, adapative_binning, chi_squared_classifier, fit_sn_hg, fitting_func, fit_spectrum, read_target_spectra, read_template_files, trim_nans, 
+    calculate_B, calculate_C, calculate_spectral_error, parse_command_line_args, build_fit_plot, interactive_viewer, read_batch_metadata, get_target_params
 end

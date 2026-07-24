@@ -1,7 +1,7 @@
 name = "SIREN"
 uuid = "af1d20ca-a97d-4fe6-a17a-0966c3d02919"
-version = "0.1.0"
 authors = ["Edward Charleton <e.charleton@soton.ac.uk"]
+version = "0.1.0"
 
 [deps]
 ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
