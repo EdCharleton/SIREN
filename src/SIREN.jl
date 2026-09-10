@@ -280,10 +280,14 @@ function SIREN_main()
     if batch_mode
         best_types = Dict{String, String}()
         for target_name in target_spectra_names
-            fit = classifications[splitext(basename(target_name))[1]]
-            type = fit["type"]
-            #add to the best_types dict
-            best_types[target_name] = type
+            try
+                fit = classifications[splitext(basename(target_name))[1]]
+                type = fit["type"]
+                #add to the best_types dict
+                best_types[target_name] = type
+            catch
+                continue
+            end
         end
         unique_types = unique(values(best_types))
         println("----------------------------------------------")
@@ -307,6 +311,7 @@ function SIREN_main()
     printstyled("Classifications saved to:", color=:green)
     println(" $out_json")
     println("----------------------------------------------")
+    make_plots = true
 
     # ── Interactive fit viewer (single-file mode only) ────────────────────────
     if show_plots && !batch_mode && !isempty(target_spectra_names)
@@ -329,7 +334,7 @@ function SIREN_main()
             readline()
         end
     
-    elseif batch_mode && !isempty(target_spectra_names)
+    elseif batch_mode && !isempty(target_spectra_names) && make_plots == true
         println("Generating plots for top fits...")
         #Plot and save the top fits for each target
         for target_name in target_spectra_names
@@ -359,4 +364,4 @@ function SIREN_main()
 end
 
 end
-#SIREN.julia_main()
+SIREN.julia_main()

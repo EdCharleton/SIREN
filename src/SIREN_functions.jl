@@ -139,7 +139,7 @@ module ClassifierFunctions
             "--minimum_overlap", "-m"
                 help = "Minimum overlap between the target and templates, units of %"
                 arg_type = Float64
-                default = 75  # Default is '0.0'
+                default = 90 
 
             "--save_path", "-s"
                 help = "Directory to save output plots and JSON file"
@@ -181,7 +181,7 @@ module ClassifierFunctions
         "type"            => "None",
         "remove_telluric" => "N",
         "galactic_source" => "N",
-        "minimum_overlap" => 75.0,
+        "minimum_overlap" => 90,
     )
 
 
@@ -962,8 +962,7 @@ end
         C = numerator / denominator
         return C
     end
-
-    #------------------- Chi Squared Classifier -------------------
+#------------------- Chi Squared Classifier -------------------
 function chi_squared_classifier(
         transient_template_info, transient_template_names, transient_template_files,
         host_template_info,      host_template_names,      host_template_files,
@@ -973,7 +972,10 @@ function chi_squared_classifier(
         batch_mode, show_plot = false, remove_telluric = "N", minimum_overlap = 50;
         master_grid = nothing, T_master = nothing, MT_master = nothing,
         H_master = nothing, MH_master = nothing,
-        Rv = 3.1, Av_min = -3.0, Av_max = 3.0, Av_step = 0.5, savepath = "classifications",
+        Rv = 3.1,
+        Av_min = -3.0, Av_max = 3.0, Av_step = 0.2,               # transient (SN) extinction grid
+        Av_host_min = -3.0, Av_host_max = 3.0, Av_host_step = 0.2, # host-galaxy extinction grid — coarser by default
+        savepath = "classifications",
         N_top = 100)
 
     use_prebuilt = !isnothing(T_master)
@@ -999,7 +1001,8 @@ function chi_squared_classifier(
     norm_arr      = zeros(Float32, n_types, 2)
     redshift_vals = zeros(Float32, n_types)
     best_indices  = zeros(Int,     n_types, 2)
-    best_Av_arr   = zeros(Float32, n_types)
+    best_Av_transient_arr = zeros(Float32, n_types)   # ← was best_Av_arr; now split
+    best_Av_host_arr      = zeros(Float32, n_types)   # ← new
     best_z_index  = zeros(Int,     n_types)
     contam_array  = Vector{Float32}(undef, n_types)
 
@@ -1032,16 +1035,33 @@ function chi_squared_classifier(
     original_target_flux   = deepcopy(working_flux)
     original_target_flux_σ = deepcopy(working_flux_σ)
 
-    # ── Extinction grid ───────────────────────────────────────────────────────
-    Av_grid = collect(Av_min:Av_step:Av_max)
-    N_av    = length(Av_grid)
+    # ── Extinction grids — transient and host now independent ─────────────────
+    # Applying different amounts of dust reddening to the SN and its host is
+    # Same Rv (dust law shape) is used for both for now 
+    Av_grid_transient = collect(Av_min:Av_step:Av_max)
+    Av_grid_host      = collect(Av_host_min:Av_host_step:Av_host_max)
+    N_av_t = length(Av_grid_transient)
+    N_av_h = length(Av_grid_host)
     ext_law = F99(Rv = Rv)
 
     # ── Pre-compute all extinction curves on the FIXED master_grid ────────────
-    ext_curves_gpu = if use_prebuilt
+    # NOTE ON COST: the Av search space now scales as N_av_t * N_av_h per
+    # redshift step (previously just N_av). With the defaults above that's
+    # 31 * 13 = 403 GEMM passes per z instead of 31 — the host grid defaults to
+    # a coarser step specifically to keep this manageable. Tighten
+    # Av_host_step if you need finer host-extinction resolution and can afford
+    # the extra compute.
+    ext_curves_transient_gpu = if use_prebuilt
         N_lam_master = length(master_grid)
         [to_gpu(Float32.(10.0 .^ (-0.4f0 .* Float32(Av) .* Float32.(ext_law.(master_grid)))))
-         for Av in Av_grid]
+         for Av in Av_grid_transient]
+    else
+        nothing
+    end
+
+    ext_curves_host_gpu = if use_prebuilt
+        [to_gpu(Float32.(10.0 .^ (-0.4f0 .* Float32(Av) .* Float32.(ext_law.(master_grid)))))
+         for Av in Av_grid_host]
     else
         nothing
     end
@@ -1145,9 +1165,10 @@ function chi_squared_classifier(
     target_w_stack_gpu = to_gpu(target_w_stack)
 
     # ── Running-best trackers across all passes ───────────────────────────────
-    best_chi_tracker  = fill(Float32(Inf), N_T * N_H, N_z)
-    best_av_tracker   = zeros(Float32,     N_T * N_H, N_z)
-    best_npts_tracker = zeros(Float32,     N_T * N_H, N_z)
+    best_chi_tracker           = fill(Float32(Inf), N_T * N_H, N_z)
+    best_av_transient_tracker  = zeros(Float32,     N_T * N_H, N_z)   # ← was best_av_tracker
+    best_av_host_tracker       = zeros(Float32,     N_T * N_H, N_z)   # ← new
+    best_npts_tracker          = zeros(Float32,     N_T * N_H, N_z)
 
     # ── Outer z loop ──────────────────────────────────────────────────────────
     for (iz, z) in enumerate(batch_mode ? redshift_range : ProgressBar(redshift_range))
@@ -1240,79 +1261,90 @@ function chi_squared_classifier(
             ext_law_base = Float32.(ext_law.(frozen_λ))
         end
 
-        # ── Inner Av loop ─────────────────────────────────────────────────────
-        for (av_idx, Av) in enumerate(Av_grid)
+        # ── Inner Av loop — transient extinction is the outer loop since it
+        # touches T_mat/T_ext_gpu, which we want to recompute as few times as
+        # possible; host extinction is the inner loop, recomputed per combo. ──
+        for (av_t_idx, Av_t) in enumerate(Av_grid_transient)
 
             if use_prebuilt
-                T_ext_gpu .= T_master_gpu .* ext_curves_gpu[av_idx]
-                H_ext_gpu .= H_master_gpu .* ext_curves_gpu[av_idx]
-
-                WT_T    = WT .* T_ext_gpu
-                WT_T2   = WT_T .* T_ext_gpu
-                H_clean = H_ext_gpu .* MH_master_gpu
-
-                S_sh_gpu  = transpose(WT_T) * H_clean
-                S_os_gpu  = transpose(WT_T .* Y_gpu) * MH_master_gpu
-                S_oh_gpu  = transpose(WT) * (H_clean .* Y_gpu)
-                S_ss_gpu  = transpose(WT_T2) * MH_master_gpu
-                S_hh_gpu  = transpose(WT) * (H_clean .* H_clean)
-                S_oo_gpu  = transpose(WT .* (Y_gpu.^2)) * MH_master_gpu
-                N_pts_gpu = transpose(MT_master_gpu) * MH_master_gpu
+                T_ext_gpu .= T_master_gpu .* ext_curves_transient_gpu[av_t_idx]
             else
-                ext_curve_cpu = Float32.(10.0 .^ (-0.4f0 .* Float32(Av) .* ext_law_base))
-                T_mat = T_mat_base .* ext_curve_cpu
-                H_mat = H_mat_base .* ext_curve_cpu
-
-                T_g = to_gpu(T_mat)
-                H_g = to_gpu(H_mat)
-
-                WT_T    = WT .* T_g
-                WT_T2   = WT_T .* T_g
-                H_clean = H_g .* MH_g
-
-                S_sh_gpu  = transpose(WT_T) * H_clean
-                S_os_gpu  = transpose(WT_T .* Y_gpu) * MH_g
-                S_oh_gpu  = transpose(WT) * (H_clean .* Y_gpu)
-                S_ss_gpu  = transpose(WT_T2) * MH_g
-                S_hh_gpu  = transpose(WT) * (H_clean .* H_clean)
-                S_oo_gpu  = transpose(WT .* (Y_gpu.^2)) * MH_g
-                N_pts_gpu = transpose(MT_g) * MH_g
+                ext_curve_t_cpu = Float32.(10.0 .^ (-0.4f0 .* Float32(Av_t) .* ext_law_base))
+                T_mat = T_mat_base .* ext_curve_t_cpu
+                T_g   = to_gpu(T_mat)
             end
 
-            # ── Analytical solve ──────────────────────────────────────────────
-            det_gpu = max.(S_ss_gpu .* S_hh_gpu .- S_sh_gpu.^2, 1f-10)
+            for (av_h_idx, Av_h) in enumerate(Av_grid_host)
 
-            B_gpu .= (S_os_gpu .* S_hh_gpu .- S_oh_gpu .* S_sh_gpu) ./ det_gpu
-            C_gpu .= (S_oh_gpu .* S_ss_gpu .- S_os_gpu .* S_sh_gpu) ./ det_gpu
+                if use_prebuilt
+                    H_ext_gpu .= H_master_gpu .* ext_curves_host_gpu[av_h_idx]
 
-            chi_sq_gpu .= S_oo_gpu .+ B_gpu.^2 .* S_ss_gpu .+ C_gpu.^2 .* S_hh_gpu .-
-                          2.0f0 .* B_gpu .* S_os_gpu .- 2.0f0 .* C_gpu .* S_oh_gpu .+
-                          2.0f0 .* B_gpu .* C_gpu .* S_sh_gpu
+                    WT_T    = WT .* T_ext_gpu
+                    WT_T2   = WT_T .* T_ext_gpu
+                    H_clean = H_ext_gpu .* MH_master_gpu
 
-            invalid_coeffs = (B_gpu .< 0.0f0) .| (C_gpu .< 0.0f0) .| (N_pts_gpu .<= 0.0f0)
-            chi_sq_gpu[invalid_coeffs] .= Float32(Inf)
+                    S_sh_gpu  = transpose(WT_T) * H_clean
+                    S_os_gpu  = transpose(WT_T .* Y_gpu) * MH_master_gpu
+                    S_oh_gpu  = transpose(WT) * (H_clean .* Y_gpu)
+                    S_ss_gpu  = transpose(WT_T2) * MH_master_gpu
+                    S_hh_gpu  = transpose(WT) * (H_clean .* H_clean)
+                    S_oo_gpu  = transpose(WT .* (Y_gpu.^2)) * MH_master_gpu
+                    N_pts_gpu = transpose(MT_master_gpu) * MH_master_gpu
+                else
+                    ext_curve_h_cpu = Float32.(10.0 .^ (-0.4f0 .* Float32(Av_h) .* ext_law_base))
+                    H_mat = H_mat_base .* ext_curve_h_cpu
+                    H_g   = to_gpu(H_mat)
 
-            chi_sq_red_gpu .= chi_sq_gpu ./ max.(N_pts_gpu, 1.0f0)
+                    WT_T    = WT .* T_g
+                    WT_T2   = WT_T .* T_g
+                    H_clean = H_g .* MH_g
 
-            chi_pass_vec  = vec(to_cpu(chi_sq_red_gpu))
-            npts_pass_vec = vec(to_cpu(N_pts_gpu))
+                    S_sh_gpu  = transpose(WT_T) * H_clean
+                    S_os_gpu  = transpose(WT_T .* Y_gpu) * MH_g
+                    S_oh_gpu  = transpose(WT) * (H_clean .* Y_gpu)
+                    S_ss_gpu  = transpose(WT_T2) * MH_g
+                    S_hh_gpu  = transpose(WT) * (H_clean .* H_clean)
+                    S_oo_gpu  = transpose(WT .* (Y_gpu.^2)) * MH_g
+                    N_pts_gpu = transpose(MT_g) * MH_g
+                end
 
-            chi_pass_vec[isnan.(chi_pass_vec)] .= Float32(Inf)
+                # ── Analytical solve ──────────────────────────────────────────
+                det_gpu = max.(S_ss_gpu .* S_hh_gpu .- S_sh_gpu.^2, 1f-10)
 
-            current_best = @view best_chi_tracker[:, iz]
-            improved     = chi_pass_vec .< current_best
+                B_gpu .= (S_os_gpu .* S_hh_gpu .- S_oh_gpu .* S_sh_gpu) ./ det_gpu
+                C_gpu .= (S_oh_gpu .* S_ss_gpu .- S_os_gpu .* S_sh_gpu) ./ det_gpu
 
-            best_chi_tracker[improved, iz]  .= chi_pass_vec[improved]
-            best_npts_tracker[improved, iz] .= npts_pass_vec[improved]
-            best_av_tracker[improved, iz]   .= Float32(Av)
+                chi_sq_gpu .= S_oo_gpu .+ B_gpu.^2 .* S_ss_gpu .+ C_gpu.^2 .* S_hh_gpu .-
+                              2.0f0 .* B_gpu .* S_os_gpu .- 2.0f0 .* C_gpu .* S_oh_gpu .+
+                              2.0f0 .* B_gpu .* C_gpu .* S_sh_gpu
 
-        end  # ── end Av loop
+                invalid_coeffs = (B_gpu .< 0.0f0) .| (C_gpu .< 0.0f0) .| (N_pts_gpu .<= 0.0f0)
+                chi_sq_gpu[invalid_coeffs] .= Float32(Inf)
+
+                chi_sq_red_gpu .= chi_sq_gpu ./ max.(N_pts_gpu, 1.0f0)
+
+                chi_pass_vec  = vec(to_cpu(chi_sq_red_gpu))
+                npts_pass_vec = vec(to_cpu(N_pts_gpu))
+
+                chi_pass_vec[isnan.(chi_pass_vec)] .= Float32(Inf)
+
+                current_best = @view best_chi_tracker[:, iz]
+                improved     = chi_pass_vec .< current_best
+
+                best_chi_tracker[improved, iz]          .= chi_pass_vec[improved]
+                best_npts_tracker[improved, iz]         .= npts_pass_vec[improved]
+                best_av_transient_tracker[improved, iz] .= Float32(Av_t)
+                best_av_host_tracker[improved, iz]      .= Float32(Av_h)
+
+            end  # ── end host Av loop
+        end  # ── end transient Av loop
     end  # ── end z loop
 
     # ── Reshape best trackers for type-level reduction ────────────────────────
-    results_3d  = reshape(best_chi_tracker,  N_T, N_H, N_z)
-    npts_3d     = reshape(best_npts_tracker, N_T, N_H, N_z)
-    av_3d       = reshape(best_av_tracker,   N_T, N_H, N_z)
+    results_3d      = reshape(best_chi_tracker,          N_T, N_H, N_z)
+    npts_3d         = reshape(best_npts_tracker,         N_T, N_H, N_z)
+    av_transient_3d = reshape(best_av_transient_tracker, N_T, N_H, N_z)
+    av_host_3d      = reshape(best_av_host_tracker,      N_T, N_H, N_z)
 
     # ── Parallel type-level reduction ─────────────────────────────────────────
     Threads.@threads for t_type_index in 1:n_types
@@ -1346,21 +1378,23 @@ function chi_squared_classifier(
         end
 
         if best_val < chi_squared_red_arr[t_type_index] && best_t > 0
-            chi_squared_arr[t_type_index]     = best_val * npts_3d[best_t, best_h, best_iz]
-            chi_squared_red_arr[t_type_index] = best_val
-            best_indices[t_type_index, 1]     = best_t
-            best_indices[t_type_index, 2]     = best_h
-            best_Av_arr[t_type_index]         = av_3d[best_t, best_h, best_iz]
-            redshift_vals[t_type_index]        = redshift_range[best_iz]
-            best_z_index[t_type_index]         = best_iz
+            chi_squared_arr[t_type_index]         = best_val * npts_3d[best_t, best_h, best_iz]
+            chi_squared_red_arr[t_type_index]     = best_val
+            best_indices[t_type_index, 1]         = best_t
+            best_indices[t_type_index, 2]         = best_h
+            best_Av_transient_arr[t_type_index]   = av_transient_3d[best_t, best_h, best_iz]
+            best_Av_host_arr[t_type_index]        = av_host_3d[best_t, best_h, best_iz]
+            redshift_vals[t_type_index]            = redshift_range[best_iz]
+            best_z_index[t_type_index]             = best_iz
         end
     end
 
     # ── Extract top N_top fits globally ──────────────────────────────────────
     let
-        flat_chi  = vec(best_chi_tracker)
-        flat_av   = vec(best_av_tracker)
-        flat_npts = vec(best_npts_tracker)
+        flat_chi   = vec(best_chi_tracker)
+        flat_av_t  = vec(best_av_transient_tracker)
+        flat_av_h  = vec(best_av_host_tracker)
+        flat_npts  = vec(best_npts_tracker)
 
         valid_flat = falses(N_T * N_H * N_z)
         for iz in 1:N_z
@@ -1395,8 +1429,9 @@ function chi_squared_classifier(
                 t_idx    = mod1(th_flat, N_T)
                 h_idx    = (th_flat - 1) ÷ N_T + 1
 
-                z_val  = redshift_range[iz]
-                Av_val = Float64(flat_av[flat_idx])
+                z_val    = redshift_range[iz]
+                Av_t_val = Float64(flat_av_t[flat_idx])
+                Av_h_val = Float64(flat_av_h[flat_idx])
 
                 transient_key = (transient_template_names[t_idx], Float64(z_val))
                 transient_key in seen_transients && continue
@@ -1411,8 +1446,10 @@ function chi_squared_classifier(
                     "host_type"          => host_template_info["HG Type"][host_template_names[h_idx]],
                     "host_template"      => host_template_names[h_idx],
                     "redshift"           => Float64(z_val),
-                    "Av"                 => Av_val,
-                    "E_B_V"              => Av_val / Float64(Rv),
+                    "Av_transient"       => Av_t_val,          # ← was "Av"
+                    "Av_host"            => Av_h_val,          # ← new
+                    "E_B_V_transient"    => Av_t_val / Float64(Rv),  # ← was "E_B_V"
+                    "E_B_V_host"         => Av_h_val / Float64(Rv),  # ← new
                     "phase"              => get(transient_template_info["tau"], transient_template_names[t_idx], "N/A")
                 ))
             end
@@ -1427,7 +1464,8 @@ function chi_squared_classifier(
 
         iz    = best_z_index[t_type_index]
         z_val = redshift_vals[t_type_index]
-        Av    = best_Av_arr[t_type_index]
+        Av_t  = best_Av_transient_arr[t_type_index]
+        Av_h  = best_Av_host_arr[t_type_index]
 
         if use_prebuilt
             bottom_λ  = 3800.0f0 / (1.0f0 + Float32(z_val))
@@ -1445,9 +1483,11 @@ function chi_squared_classifier(
             T_col  = to_cpu(T_master_gpu[row_start:row_end, t_idx])
             H_col  = to_cpu(H_master_gpu[row_start:row_end, h_idx])
 
-            ext_curve_win = Float32.(10.0 .^ (-0.4f0 .* Float32(Av) .* Float32.(ext_law.(frozen_λ_win))))
-            T_col .= T_col .* ext_curve_win
-            H_col .= H_col .* ext_curve_win
+            # Apply the separately-fitted transient and host extinction
+            ext_curve_t_win = Float32.(10.0 .^ (-0.4f0 .* Float32(Av_t) .* Float32.(ext_law.(frozen_λ_win))))
+            ext_curve_h_win = Float32.(10.0 .^ (-0.4f0 .* Float32(Av_h) .* Float32.(ext_law.(frozen_λ_win))))
+            T_col .= T_col .* ext_curve_t_win
+            H_col .= H_col .* ext_curve_h_win
 
             z_val != 0.0 && t_idx in galactic_transients && (MT_col .= 0.0f0)
             invalid_win = .!target_valid_stack[row_start:row_end, iz]
@@ -1515,11 +1555,13 @@ function chi_squared_classifier(
     # ── Collect results ───────────────────────────────────────────────────────
     fitted_type_indices = findall(x -> x != 0, best_indices[:, 1])
 
-    top_fit_types    = [transient_template_info["Type"][transient_template_names[i]]  for i in best_indices[fitted_type_indices, 1]]
-    top_fit_hg_types = [host_template_info["HG Type"][host_template_names[i]]         for i in best_indices[fitted_type_indices, 2]]
-    top_fit_av       = [best_Av_arr[i]                                                 for i in fitted_type_indices]
-    top_fit_eb_v     = [av / Rv for av in top_fit_av]
-    top_fit_phase    = [transient_template_info["tau"][transient_template_names[i]]   for i in best_indices[fitted_type_indices, 1]]
+    top_fit_types           = [transient_template_info["Type"][transient_template_names[i]]  for i in best_indices[fitted_type_indices, 1]]
+    top_fit_hg_types        = [host_template_info["HG Type"][host_template_names[i]]         for i in best_indices[fitted_type_indices, 2]]
+    top_fit_av_transient    = [best_Av_transient_arr[i]                                       for i in fitted_type_indices]  # ← was top_fit_av
+    top_fit_av_host         = [best_Av_host_arr[i]                                            for i in fitted_type_indices]  # ← new
+    top_fit_ebv_transient   = [av / Rv for av in top_fit_av_transient]                                                       # ← was top_fit_eb_v
+    top_fit_ebv_host        = [av / Rv for av in top_fit_av_host]                                                            # ← new
+    top_fit_phase           = [transient_template_info["tau"][transient_template_names[i]]   for i in best_indices[fitted_type_indices, 1]]
 
     best_type_full_idx = argmin(chi_squared_red_arr)
     best_type_idx      = findfirst(==(best_type_full_idx), fitted_type_indices)

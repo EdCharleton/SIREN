@@ -49,3 +49,6 @@ TiDES_metadata.numbers
 classifications_classifications.json
 metadata.zip
 templates.zip
+python_dir/milligan25_create_metadata.py
+python_dir/import pandas as pd.py
+
