@@ -195,6 +195,12 @@ function SIREN_main()
 
         target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
 
+        if length(target_wl) < 2
+            printstyled("Skipping ", color=:yellow)
+            println("$target_name: wavelength array has only $(length(target_wl)) point(s).")
+            continue
+        end
+
         # Display name: strip path and extension
         target_name = splitext(basename(n))[1]
 

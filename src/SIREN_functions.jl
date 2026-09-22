@@ -629,6 +629,7 @@ end
     end
 
     function make_bins(λ)
+        length(λ) < 2 && throw(ArgumentError("Spectral Resampler requires ≥ 2 wavelength points, got $(length(λ))"))
         edges = zeros(Float64, length(λ) + 1)
         widths = zeros(Float64, length(λ))
         edges[1] = λ[1] - (λ[2] - λ[1]) / 2
