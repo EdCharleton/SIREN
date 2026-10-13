@@ -20,7 +20,7 @@ using Plots
 
 
 # ── julia_main ────────────────────────────────────────────────────────────────
-# Entry point for the compiled binary. PackageCompiler requires this signature.
+# Entry point for the compiled binary. PackageCompiler (the binary compiler) requires this signature.
 function julia_main()::Cint
     try
         SIREN_main()
@@ -37,44 +37,36 @@ function SIREN_main()
 
     #Parse in inputs from the commandline
     parsed_args            = parse_command_line_args()
-    file_path              = parsed_args["file_path"]
-    raw_z                  = parsed_args["redshift"]
-    local_z_min            = parsed_args["z_min"]
-    local_z_max            = parsed_args["z_max"]
-    local_z_step           = parsed_args["z_step"]
-    target_redshift        = (raw_z == "None" || raw_z == "none") ? "None" : parse(Float64, raw_z)
-    local_type             = parsed_args["type"]
-    galactic_source        = parsed_args["galactic_source"]
-    show_plots             = parsed_args["display_plot"]
-    target_remove_telluric = parsed_args["remove_telluric"]
-    batch_mode             = parsed_args["batch"]
-    local_minimum_overlap  = parsed_args["minimum_overlap"]
-    use_gpu_flag           = parsed_args["use_gpu"]
-    savepath               = parsed_args["save_path"]
-    meta_path              = parsed_args["metadata_path"]
+    file_path              = parsed_args["file_path"] #path to the target spectra or directory of spectra
+    raw_z                  = parsed_args["redshift"] #redshift if known 
+    local_z_min            = parsed_args["z_min"] #minimum redshift for grid search
+    local_z_max            = parsed_args["z_max"] #maximum redshift for grid search
+    local_z_step           = parsed_args["z_step"] #the step size
+    target_redshift        = (raw_z == "None" || raw_z == "none") ? "None" : parse(Float64, raw_z) #check if there is a redshift provided
+    local_type             = parsed_args["type"] #What is the object type (e.g type Ia type II etc)
+    galactic_source        = parsed_args["galactic_source"] #Is it a cv (redshift set to 0)
+    show_plots             = parsed_args["display_plot"] #use the interactive plotting tool
+    target_remove_telluric = parsed_args["remove_telluric"] #Remove the wavelength regions with tellurics
+    batch_mode             = parsed_args["batch"] #fit multiple spectra
+    local_minimum_overlap  = parsed_args["minimum_overlap"] #minimum overlap between the target and the template
+    use_gpu_flag           = parsed_args["use_gpu"] #Flag for whether or not to use a gpu
+    savepath               = parsed_args["save_path"] #where to save
+    meta_path              = parsed_args["metadata_path"] # where sn metadata is located
 
 
     ClassifierFunctions.use_gpu = use_gpu_flag
         
-    # ── Suppress GR display window in batch mode or when plots are off ────────
-    # GKSwstype = "nul" routes GR to a null workstation — no window is created
-    # or buffered, so nothing flashes up at exit even if plot objects are built.
+    # Supress the plotting window if its in batch mode or the plotting is set to off
     if batch_mode || !show_plots
         ENV["GKSwstype"] = "nul"
     end
 
     # ── Template metadata ─────────────────────────────────────────────────────
-    sn_template_metadata   = JSON.parsefile(
-        joinpath("templates", "transient_template_dir", "metadata", "pure_sn_spectra_data.json"),
-        dicttype = OrderedDict)
-    sn_template_file_names = readlines(
-        joinpath("templates", "transient_template_dir", "metadata", "pure_sn_spectra_names.txt"))
-
-    hg_template_metadata   = JSON.parsefile(
-        joinpath("templates", "host_template_dir", "metadata", "pure_hg_spectra_data.json"),
-        dicttype = OrderedDict)
-    hg_template_file_names = readlines(
-        joinpath("templates", "host_template_dir", "metadata", "pure_hg_spectra_names.txt"))
+    sn_template_metadata   = JSON.parsefile(joinpath("templates", "transient_template_dir", "metadata", "pure_sn_spectra_data.json"),dicttype = OrderedDict)
+    sn_template_file_names = readlines(joinpath("templates", "transient_template_dir", "metadata", "pure_sn_spectra_names.txt"))
+    
+    hg_template_metadata   = JSON.parsefile(joinpath("templates", "host_template_dir", "metadata", "pure_hg_spectra_data.json"), dicttype = OrderedDict)
+    hg_template_file_names = readlines(joinpath("templates", "host_template_dir", "metadata", "pure_hg_spectra_names.txt"))
 
     println("----------------------------------------------")
     printstyled("Loading in Templates...\n", color=:green)
