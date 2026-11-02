@@ -64,7 +64,7 @@ function SIREN_main()
     # ── Template metadata ─────────────────────────────────────────────────────
     sn_template_metadata   = JSON.parsefile(joinpath("templates", "transient_template_dir", "metadata", "pure_sn_spectra_data.json"),dicttype = OrderedDict)
     sn_template_file_names = readlines(joinpath("templates", "transient_template_dir", "metadata", "pure_sn_spectra_names.txt"))
-    
+
     hg_template_metadata   = JSON.parsefile(joinpath("templates", "host_template_dir", "metadata", "pure_hg_spectra_data.json"), dicttype = OrderedDict)
     hg_template_file_names = readlines(joinpath("templates", "host_template_dir", "metadata", "pure_hg_spectra_names.txt"))
 
@@ -74,39 +74,27 @@ function SIREN_main()
 
     # ── Pre-built template matrices ───────────────────────────────────────────
     prebuilt_path = joinpath("templates/prebuilt_templates.jld2")
-    if isfile(prebuilt_path)
-        println("Loading pre-built template matrices from $prebuilt_path ...")
-        prebuilt    = load(prebuilt_path)
-        master_grid = prebuilt["master_grid"]
-        T_master    = ClassifierFunctions.to_gpu(prebuilt["T_master"])
-        MT_master   = ClassifierFunctions.to_gpu(prebuilt["MT_master"])
-        H_master    = ClassifierFunctions.to_gpu(prebuilt["H_master"])
-        MH_master   = ClassifierFunctions.to_gpu(prebuilt["MH_master"])
 
-        # Keep plain CPU copies for the interactive viewer (no GPU transfer needed)
-        T_master_cpu  = prebuilt["T_master"]
-        MT_master_cpu = prebuilt["MT_master"]
-        H_master_cpu  = prebuilt["H_master"]
-        MH_master_cpu = prebuilt["MH_master"]
+    println("Loading transient and host template matrices from $prebuilt_path ...")
+    prebuilt    = load(prebuilt_path)
 
-        sn_template_wavs    = Vector{Vector{Float64}}()
-        sn_template_spectra = Vector{Vector{Float64}}()
-        hg_template_wavs    = Vector{Vector{Float64}}()
-        hg_template_spectra = Vector{Vector{Float64}}()
-    else
-        println("No pre-built templates found — using legacy loading.")
-        master_grid = MT_master = T_master = H_master = MH_master = nothing
-        T_master_cpu = MT_master_cpu = H_master_cpu = MH_master_cpu = nothing
-        sn_template_wavs,    sn_template_spectra = read_template_files(
-            sn_template_file_names, sn_template_metadata, "Supernova Template")
-        hg_template_wavs,    hg_template_spectra, _ = read_template_files(
-            hg_template_file_names, hg_template_metadata, "Hg Template")
-    end
+    #setup the master grid and the template matrices for SIREN
+    master_grid = prebuilt["master_grid"]
+    T_master    = ClassifierFunctions.to_gpu(prebuilt["T_master"])
+    MT_master   = ClassifierFunctions.to_gpu(prebuilt["MT_master"])
+    H_master    = ClassifierFunctions.to_gpu(prebuilt["H_master"])
+    MH_master   = ClassifierFunctions.to_gpu(prebuilt["MH_master"])
 
-    # ── Batch metadata (optional CSV with per-file redshift / telluric flag) ──
-    # Expected columns: "File Name", "Redshift", "REMOVE_TELLURIC"
-    # If the file doesn't exist, global CLI/REPL values are used for every spectrum.
-    batch_metadata     = nothing
+    # Keep plain CPU copies for the interactive viewer (no GPU transfer needed)
+    T_master_cpu  = prebuilt["T_master"]
+    MT_master_cpu = prebuilt["MT_master"]
+    H_master_cpu  = prebuilt["H_master"]
+    MH_master_cpu = prebuilt["MH_master"]
+
+    sn_template_wavs    = Vector{Vector{Float64}}()
+    sn_template_spectra = Vector{Vector{Float64}}()
+    hg_template_wavs    = Vector{Vector{Float64}}()
+    hg_template_spectra = Vector{Vector{Float64}}()
 
     if batch_mode 
         println("----------------------------------------------")
@@ -124,15 +112,15 @@ function SIREN_main()
             batch_metadata   = CSV.read(meta_path, DataFrame, delim = ',')
             println("Batch metadata loaded from $meta_path")
         else
+            batch_metadata     = nothing
             printstyled("No metadata.csv found", color = :red)
             println(" at $meta_path — batch mode fitting with redshift as free parameter")
         end
     end
 
-    # ── Telluric mask ─────────────────────────────────────────────────────────
+    #Load in the telluric mask, doesnt fit the wavelengths specified where a telluric is present
     telluric_mask = readdlm(joinpath("metadata", "tellurics.txt"))
 
-    # ── Read target spectra ───────────────────────────────────────────────────
     # In batch mode, scan the directory for all valid spectral files.
     # In single-file mode, read the one file given.
     target_spectra_dict = read_target_spectra(batch_mode ? file_path : file_path,',', 0;batch_mode = batch_mode)
@@ -144,7 +132,7 @@ function SIREN_main()
 
     #For saving the outputs (JSON and plots)
     if batch_mode
-        target_names_for_saving = basename(file_path[1:end-1])  # strip trailing slash
+        target_names_for_saving = basename(file_path)
     else
         target_names_for_saving = splitext(basename(file_path))[1]
     end
@@ -153,17 +141,18 @@ function SIREN_main()
 
     mkpath(savepath)   # ensure the plot/output directory exists
 
+    #Showtime!
     target_spectra_names = collect(keys(target_spectra_dict))
     println("----------------------------------------------")
     if batch_mode
         printstyled("Classifying Targets...\n", color=:green)
     end
 
-    # ── Classify ──────────────────────────────────────────────────────────────
+    #Lock for thread-safe writing to the classifications dict
     classifications = OrderedDict()
     class_lock      = ReentrantLock()
 
-    # ── Load batch metadata once before the classifier loop ──────────────────────
+    #Load batch metadata once before the classifier loop
     global_params = Dict{String, Any}(
         "redshift"        => target_redshift,
         "z_min"           => local_z_min,
@@ -177,23 +166,23 @@ function SIREN_main()
 
     batch_metadata = batch_mode ? read_batch_metadata(meta_path) : nothing
 
-# ── Inside the Threads.@threads loop, replace the existing per-file block ─────
-
+    ################################
+    #         Show Time!           #
+    ################################
 
     progress = ProgressBar(target_spectra_names)
     Threads.@threads for n in target_spectra_names
 
-        batch_mode && update(progress)
-
         target_wl, target_spectra, target_spectra_σ = target_spectra_dict[n]
 
+        #Skips the fit if there are too few datapoints
         if length(target_wl) < 2
             printstyled("Skipping ", color=:yellow)
             println("$target_name: wavelength array has only $(length(target_wl)) point(s).")
             continue
         end
 
-        # Display name: strip path and extension
+        # Display name, strip path and extension
         target_name = splitext(basename(n))[1]
 
         if !batch_mode
@@ -201,6 +190,7 @@ function SIREN_main()
             println("$(target_name)...")
         end
 
+        #Extract the parameters from the dictionary
         if batch_mode && !isnothing(batch_metadata)
             params       = get_target_params(target_name, batch_metadata, global_params)
             local_z      = params["redshift"] == "None" ? "None" : parse(Float64, params["redshift"])
@@ -221,6 +211,7 @@ function SIREN_main()
             continue
         end
 
+        #The SIREN main function
         best_params, chi_red, z, type, top_fits = chi_squared_classifier(
         sn_template_metadata, sn_template_file_names, sn_template_spectra,
         hg_template_metadata, hg_template_file_names, hg_template_spectra,
@@ -235,21 +226,20 @@ function SIREN_main()
         H_master    = H_master,
         MH_master   = MH_master)
 
-        # Store in classifications dict — top_fits is already a Vector of Dicts
-        # so it serialises cleanly to JSON alongside the other fields
+        # Store the best fitting infomation in the classifications dict 
         lock(class_lock) do
             classifications[target_name] = Dict(
                 "redshift"  => z,
                 "type"      => type,
                 "chi_sq_red" => minimum(chi_red),
-                "top_fits"  => top_fits
-            )
+                "top_fits"  => top_fits)
         end
 
-
+        #prints a short summary if not in batch mode
         if !batch_mode
             unique_types = unique(fit["transient_type"] for fit in top_fits)
             average_redshift = median([fit["redshift"] for fit in top_fits])
+
             #count the number of each unique type
             type_counts = Dict{String, Int}()
             for t in unique_types
@@ -262,9 +252,11 @@ function SIREN_main()
             #sort by type count
             type_counts = sort(collect(type_counts), by=x->x[2], rev=true)
             unique_types = [x[1] for x in type_counts]
+
             for (unique_type, count) in type_counts
                 print("  $unique_type: $count,")
             end
+
             print("\n  Median z: $(round(average_redshift, digits=2)).")
             printstyled("\nTop 5 Fits:\n", color=:cyan)
             for fit in top_fits[1:min(5, length(top_fits))]
@@ -272,7 +264,7 @@ function SIREN_main()
             end
             println("----------------------------------------------")
         end
-
+        batch_mode && update(progress)
     end
     
     if batch_mode
@@ -281,7 +273,6 @@ function SIREN_main()
             try
                 fit = classifications[splitext(basename(target_name))[1]]
                 type = fit["type"]
-                #add to the best_types dict
                 best_types[target_name] = type
             catch
                 continue
@@ -298,8 +289,6 @@ function SIREN_main()
         println("----------------------------------------------")
     end
 
-
-
     out_json = joinpath(savepath, "$(target_names_for_saving)_classifications.json")
 
     JSON.open(out_json, "w") do f
@@ -311,7 +300,8 @@ function SIREN_main()
     println("----------------------------------------------")
     make_plots = true
 
-    # ── Interactive fit viewer (single-file mode only) ────────────────────────
+    
+    #Interactive fit viewer (single target mode only)
     if show_plots && !batch_mode && !isempty(target_spectra_names)
         n = first(target_spectra_names)
         target_name_viewer = splitext(basename(n))[1]
@@ -362,4 +352,4 @@ function SIREN_main()
 end
 
 end
-SIREN.julia_main()
+SIREN.julia_main() #Needs commenting out when running through the package compiler and uncommented when run out of the Julia REPL 

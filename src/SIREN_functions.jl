@@ -36,8 +36,6 @@ module ClassifierFunctions
 
     function __init__()
         global is_metal_loaded
-        
-
 
         try
             is_metal_loaded = Metal.functional()
@@ -107,7 +105,7 @@ module ClassifierFunctions
                 default = 0.01
     
             "--batch", "-b"
-                help = "Flag to run in batch mode (multiple at once)"
+                help = "Flag to run in batch mode (fit multiple spectra in one run)"
                 arg_type = Bool
                 default = false
 
@@ -156,10 +154,7 @@ module ClassifierFunctions
         return parse_args(ARGS, s)
     end
 
-    # ── Column name aliases ───────────────────────────────────────────────────────
-    # Maps canonical parameter names to a list of accepted column name variants.
-    # Case-insensitive matching is applied on top of these, so "Redshift" and
-    # "REDSHIFT" both resolve without needing separate entries here.
+    #Common aliases for the names of the parameters in the batch mode file to reduce crashes
     const COLUMN_ALIASES = Dict{String, Vector{String}}(
         "file_path"       => ["file", "file name", "file path", "path"],
         "redshift"        => ["redshift", "z", "red_shift", "z_spec", "zspec", "z_phot", "redshift_value"],
@@ -172,7 +167,7 @@ module ClassifierFunctions
         "type" => ["type", "sn_type"],
     )
 
-    # ── Default values (must match parse_command_line_args defaults) ──────────────
+    #Default command line argument values
     const BATCH_DEFAULTS = Dict{String, Any}(
         "redshift"        => "None",
         "z_min"           => 0.0,
@@ -184,10 +179,7 @@ module ClassifierFunctions
         "minimum_overlap" => 90,
     )
 
-
-    # ── resolve_column ─────────────────────────────────────────────────────────────
     # Returns the actual DataFrame column name that matches the canonical key,
-    # or nothing if no match is found.
     function resolve_column(df_cols::Vector{String}, canonical::String)::Union{String, Nothing}
         aliases = get(COLUMN_ALIASES, canonical, [canonical])
         for alias in aliases
@@ -198,11 +190,7 @@ module ClassifierFunctions
         return nothing
     end
 
-
-    # ── read_batch_metadata ────────────────────────────────────────────────────────
-    # Reads the metadata CSV and returns a Dict mapping target name → per-row params.
-    # Missing columns fall back to BATCH_DEFAULTS. Empty cells also fall back.
-    # Logs one warning per missing column at load time (not per-row).
+    #Reads in the batch mode metadata file provided
     function read_batch_metadata(metadata_path::String)
 
         if !isfile(metadata_path)
@@ -221,7 +209,7 @@ module ClassifierFunctions
 
         df_cols = string.(names(df))
 
-        # ── Resolve column mapping once at load time ──────────────────────────────
+        #Check all the column names to see if redshift has been put down as z for example
         col_map = Dict{String, Union{String, Nothing}}()
         for canonical in keys(BATCH_DEFAULTS)
             resolved = resolve_column(df_cols, canonical)
@@ -231,8 +219,6 @@ module ClassifierFunctions
                 println("Metadata column '$canonical' not found — will use default ($(BATCH_DEFAULTS[canonical])) for all rows.")
             end
         end
-
-        # ── File name column (required) ───────────────────────────────────────────
         name_col = resolve_column(df_cols, "file_path")
         if isnothing(name_col)
             # Try a broader search for anything that looks like a name column
@@ -249,7 +235,7 @@ module ClassifierFunctions
             return nothing
         end
 
-        # ── Build lookup dict: stripped_name → param dict ─────────────────────────
+        # Buiild a dictionary to store the info
         result = Dict{String, Dict{String, Any}}()
         for row in eachrow(df)
             raw_name = string(row[name_col])
@@ -268,7 +254,7 @@ module ClassifierFunctions
 
                 raw = row[col]
 
-                # Treat missing, empty string, "none", "nan" as "use default"
+                # Treat missing, empty string, "none", "nan" as the default provided
                 is_empty = ismissing(raw) ||
                         (raw isa AbstractString && lowercase(strip(string(raw))) in ("", "none", "nan", "n/a", "na"))
 
@@ -277,7 +263,7 @@ module ClassifierFunctions
                     continue
                 end
 
-                # ── Type-coerce to match expected type ────────────────────────────
+                #Force types to match
                 params[canonical] = try
                     if default_val isa Float64
                         parse(Float64, string(raw))
@@ -294,8 +280,7 @@ module ClassifierFunctions
                         end
                     end
                 catch
-                    # z_min and z_max are irrelevant when a specific redshift is
-                    # already set for this row — suppress the warning in that case.
+                    # z_min and z_max are irrelevant when a specific redshift is provided
                     if canonical in ("z_min", "z_max", "z_step")
                         z_col = col_map["redshift"]
                         has_redshift = !isnothing(z_col) && begin
@@ -311,56 +296,47 @@ module ClassifierFunctions
                     default_val
                 end
             end
-
             result[key] = params
         end
-
         println("Loaded metadata for $(length(result)) spectra from '$metadata_path'.")
         return result
     end
 
 
-# ── get_target_params ──────────────────────────────────────────────────────────
-# Returns the metadata dict for a given target name, falling back to global
-# CLI/REPL values if the name isn't in the metadata or metadata wasn't loaded.
-# global_params should be a Dict with the same canonical keys as BATCH_DEFAULTS.
-function get_target_params(
-        target_name::String,
-        batch_metadata::Union{Dict, Nothing},
-        global_params::Dict{String, Any})::Dict{String, Any}
+    #Extract any known params for that target for fitting, otherwise keep the default
+    function get_target_params(target_name::String, batch_metadata::Union{Dict, Nothing}, global_params::Dict{String, Any})::Dict{String, Any}
 
-    isnothing(batch_metadata) && return global_params
+        #If no batch_metadata is provided, move on with the defaults
+        isnothing(batch_metadata) && return global_params
 
-    # Try exact match first, then strip extension
-    key = splitext(basename(target_name))[1]
-    row = get(batch_metadata, key, nothing)
-    if isnothing(row)
-        row = get(batch_metadata, target_name, nothing)
+        # Try exact match first, then strip extension
+        key = splitext(basename(target_name))[1]
+        row = get(batch_metadata, key, nothing)
+        if isnothing(row)
+            row = get(batch_metadata, target_name, nothing)
+        end
+
+        if isnothing(row)
+            printstyled("  Note: ", color=:cyan)
+            println("'$target_name' not found in metadata — using global defaults.")
+            return global_params
+        end
+
+        merged = copy(global_params)
+        for (k, v) in row
+            merged[k] = v
+        end
+        return merged
     end
-
-    if isnothing(row)
-        printstyled("  Note: ", color=:cyan)
-        println("'$target_name' not found in metadata — using global defaults.")
-        return global_params
-    end
-
-    # Merge: row values take priority over global_params, global_params over BATCH_DEFAULTS
-    merged = copy(global_params)
-    for (k, v) in row
-        merged[k] = v
-    end
-    return merged
-end
-
     
     function find_closest_value(array, value)
         idx = argmin(abs.(array .- value))
         return array[idx]
     end
 
+    #Function used when reading in spectra that are formatted a bit strangely. This should help deal with a file populated with strings
     function string_import(file_path::String, delimiter::Char, skip_header::Int)
         file_data = readdlm(file_path, delimiter, skipstart = skip_header)
-    
         content = zeros(Float64, length(file_data), 3)
     
         failed = false
@@ -397,7 +373,7 @@ end
     end
 
 
-
+    #Use Savvy-G smoothing and MAD to get an estimate for the spectra uncertainty if none is given
     function calculate_spectral_error(spectra, spectra_λ, window_size::Int)
         #Use Savitsky Golay to smooth the spectrum, then calculate the residuals
         smoothed_spectra_sg = savitzky_golay(spectra, window_size, 2)
@@ -424,156 +400,156 @@ end
             MAD = median(abs.(window_residuals .- median(window_residuals)))
             new_sigma[i] = MAD
         end
-    
+
         return new_smoothed_spectra, new_spectra_λ, new_sigma
     end
     
     
-# ── Valid spectral file extensions ────────────────────────────────────────────
-const VALID_EXTENSIONS = Set([
-    ".dat", ".txt", ".ascii", ".csv", ".list",
-    ".flm", ".asci", ".clean", ".asc", ".sed", ".fits"
-])
+    # The current SIREN valid file extensions
+    const VALID_EXTENSIONS = Set([
+        ".dat", ".txt", ".ascii", ".csv", ".list",
+        ".flm", ".asci", ".clean", ".asc", ".sed", ".fits"
+    ])
 
-# ── read_target_spectra ───────────────────────────────────────────────────────
-# Single-file mode (batch_mode = false, default): reads the file at `directory`.
-# Batch mode (batch_mode = true):  if `directory` is a directory path, scans it
-# for every file whose extension is in VALID_EXTENSIONS and reads them all.
-# Returns Dict{filename => (λ, flux, σ)}.
-function read_target_spectra(directory::String, delimiter::Char = ',',
-                             skip_header::Int = 0; batch_mode::Bool = false)
+    #Read in the target spectrum or spectra (if in batch mode). Its a long one, but attempts to deal with as many formats as possible
+    function read_target_spectra(directory::String, delimiter::Char = ',',
+                                skip_header::Int = 0; batch_mode::Bool = false)
 
-    files_dict = Dict{String, Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}}()
+        files_dict = Dict{String, Tuple{Vector{Float32}, Vector{Float32}, Vector{Float32}}}()
 
-    # ── Resolve the list of files to process ─────────────────────────────────
-    file_list = if batch_mode && isdir(directory)
-        found = [joinpath(directory, f) for f in readdir(directory)
-                 if isfile(joinpath(directory, f)) &&
-                    splitext(f)[2] in VALID_EXTENSIONS]
-        if isempty(found)
-            @warn "Batch mode: no supported spectral files found in $directory"
-        else
-            printstyled("Batch mode:", color=:green)
-            println(" found $(length(found)) spectra in $directory")
-        end
-        found
-    else
-        isdir(directory) && error("Single-file mode: expected a file path, got a directory. Pass batch_mode=true to scan a directory.")
-        [directory]
-    end
-
-    isempty(file_list) && return files_dict
-
-    # ── Per-file ingestion ────────────────────────────────────────────────────
-    for file_path in file_list
-        filename  = basename(file_path)
-        ext       = splitext(filename)[2]
-
-        λ = nothing; spectra = nothing; spectra_σ = nothing
-
-        if ext in Set([".dat",".txt",".ascii",".csv",".list",
-                       ".flm",".asci",".clean",".asc",".sed"])
-
-            skip     = skip_header
-            imported = false
-            content  = nothing
-
-            while !imported
-                if ext == ".csv"
-                    content  = CSV.read(file_path, DataFrame)
-                    imported = true
-                else
-                    content = readdlm(file_path, delimiter, skipstart = skip)
-                    try
-                        _ = content[:, 2]
-                    catch
-                        content, imported = string_import(file_path, delimiter, skip)
-                    end
-                end
-
-                if !imported
-                    r1 = content[1, 1]
-                    if typeof(r1) <: AbstractString || r1 == 0
-                        skip += 1
-                    else
-                        imported = true
-                    end
-                end
-            end
-
-            λ       = Float32.(content[:, 1])
-            spectra = Float32.(content[:, 2])
-
-            spec_min = minimum(spectra)
-            spectra .+= spec_min < 0 ? 2f0 * abs(spec_min) : 0f0
-
-            no_errs = false
-            try
-                spectra_σ = Float32.(content[:, 3])
-                no_errs   = isempty(spectra_σ) || any(isnan.(spectra_σ))
-            catch
-                no_errs = true
-            end
-
-            scaler  = maximum(filter(!isnan, spectra)) / 100f0
-            spectra = spectra ./ scaler
-
-            if !no_errs
-                spectra_σ = spectra_σ ./ scaler
+        #Get the full list of files to process if in batch mode
+        file_list = if batch_mode && isdir(directory)
+            found = [joinpath(directory, f) for f in readdir(directory)
+                    if isfile(joinpath(directory, f)) &&
+                        splitext(f)[2] in VALID_EXTENSIONS]
+            if isempty(found)
+                @warn "Batch mode: no supported spectral files found in $directory"
             else
-                spectra, λ, spectra_σ = calculate_spectral_error(spectra, λ, 27)
+                printstyled("Batch mode:", color=:green)
+                println(" found $(length(found)) spectra in $directory")
             end
-
-        elseif ext == ".fits"
-            f           = FITS(file_path)
-            spectra_hdr = read_header(f[1])
-            spectra     = Float32.(read(f[1]))
-
-            try
-                spectra_σ = Float32.(sqrt.(read(f[2])))
-            catch
-                spectra_σ = spectra .* 0.1f0
-            end
-
-            try
-                λ = Float32.(collect(
-                    spectra_hdr["CRVAL1"] - spectra_hdr["CRPIX1"] * spectra_hdr["CDELT1"] :
-                    spectra_hdr["CDELT1"] :
-                    (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CDELT1"] + spectra_hdr["CRVAL1"]
-                ))
-            catch
-                λ = Float32.(collect(
-                    spectra_hdr["CRVAL1"] - spectra_hdr["CRPIX1"] * spectra_hdr["CD1_1"] :
-                    spectra_hdr["CD1_1"] :
-                    (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CD1_1"] + spectra_hdr["CRVAL1"]
-                ))
-            end
-
-            valid     = .!isnan.(spectra)
-            spectra   = spectra[valid]
-            spectra_σ = spectra_σ[valid]
-            λ         = λ[valid]
-
-            spec_min = minimum(spectra)
-            spectra .+= spec_min < 0 ? abs(spec_min) : 0f0
-
-            scaler    = maximum(spectra)
-            spectra   = (spectra ./ scaler) .* 100f0
-            spectra_σ = (spectra_σ ./ scaler) .* 100f0
-
+            found
         else
-            printstyled("ERROR: File type not supported - ", color=:red)
-            println(filename)
-            continue
+            isdir(directory) && error("Single-file mode: expected a file path, got a directory. Pass batch_mode=true to scan a directory.")
+            [directory]
         end
 
-        files_dict[file_path] = (λ, spectra, spectra_σ)
+        isempty(file_list) && return files_dict
+
+        # Read in the individual files
+        for file_path in file_list
+            filename  = basename(file_path)
+            ext       = splitext(filename)[2]
+
+            λ = nothing; spectra = nothing; spectra_σ = nothing
+
+            #Read in ascii style files
+            if ext in Set([".dat",".txt",".ascii",".csv",".list",
+                        ".flm",".asci",".clean",".asc",".sed"])
+
+                skip     = skip_header
+                imported = false
+                content  = nothing
+
+                #specific for rreading in a CSV
+                while !imported
+                    if ext == ".csv"
+                        content  = CSV.read(file_path, DataFrame)
+                        imported = true
+                    else
+                        content = readdlm(file_path, delimiter, skipstart = skip)
+                        try
+                            _ = content[:, 2]
+                        catch
+                            content, imported = string_import(file_path, delimiter, skip)
+                        end
+                    end
+
+                    if !imported
+                        r1 = content[1, 1]
+                        if typeof(r1) <: AbstractString || r1 == 0
+                            skip += 1
+                        else
+                            imported = true
+                        end
+                    end
+                end
+
+                λ       = Float32.(content[:, 1])
+                spectra = Float32.(content[:, 2])
+
+                spec_min = minimum(spectra)
+                spectra .+= spec_min < 0 ? 2f0 * abs(spec_min) : 0f0
+
+                no_errs = false
+                try
+                    spectra_σ = Float32.(content[:, 3])
+                    no_errs   = isempty(spectra_σ) || any(isnan.(spectra_σ))
+                catch
+                    no_errs = true
+                end
+
+                scaler  = maximum(filter(!isnan, spectra)) / 100f0
+                spectra = spectra ./ scaler
+
+                if !no_errs
+                    spectra_σ = spectra_σ ./ scaler
+                else
+                    spectra, λ, spectra_σ = calculate_spectral_error(spectra, λ, 27) #Use the Savvy-G routine
+                end
+
+            #Read in fits files
+            elseif ext == ".fits"
+                f           = FITS(file_path)
+                spectra_hdr = read_header(f[1])
+                spectra     = Float32.(read(f[1]))
+
+                try
+                    spectra_σ = Float32.(sqrt.(read(f[2])))
+                catch
+                    spectra_σ = spectra .* 0.1f0
+                end
+
+                try
+                    λ = Float32.(collect(
+                        spectra_hdr["CRVAL1"] - spectra_hdr["CRPIX1"] * spectra_hdr["CDELT1"] :
+                        spectra_hdr["CDELT1"] :
+                        (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CDELT1"] + spectra_hdr["CRVAL1"]
+                    ))
+                catch
+                    λ = Float32.(collect(
+                        spectra_hdr["CRVAL1"] - spectra_hdr["CRPIX1"] * spectra_hdr["CD1_1"] :
+                        spectra_hdr["CD1_1"] :
+                        (spectra_hdr["NAXIS1"] - spectra_hdr["CRPIX1"] - 1) * spectra_hdr["CD1_1"] + spectra_hdr["CRVAL1"]
+                    ))
+                end
+
+                valid     = .!isnan.(spectra)
+                spectra   = spectra[valid]
+                spectra_σ = spectra_σ[valid]
+                λ         = λ[valid]
+
+                spec_min = minimum(spectra)
+                spectra .+= spec_min < 0 ? abs(spec_min) : 0f0
+
+                scaler    = maximum(spectra)
+                spectra   = (spectra ./ scaler) .* 100f0
+                spectra_σ = (spectra_σ ./ scaler) .* 100f0
+
+            #Otherwise return a wanring that the file isn't supported
+            else
+                printstyled("ERROR: File type not supported - ", color=:red)
+                println(filename)
+                continue
+            end
+
+            files_dict[file_path] = (λ, spectra, spectra_σ)
+        end
+
+        return files_dict
     end
 
-    return files_dict
-end
-
-
+    #Read in template ascii files
     function read_template_files(template_file_names, template_metadata, label)
         println("Loading in $label Spectra...")
         #setup empty matricies to populate with templates
@@ -583,6 +559,7 @@ end
         if label == "Hg Template"
             mask = Vector{Vector{Float64}}(undef, length(template_file_names))
         end
+
         #Use multithreading to read in the files
         Threads.@threads for i in ProgressBar(eachindex(template_file_names))
             key = template_file_names[i]
@@ -628,6 +605,7 @@ end
         end
     end
 
+    #Make bins for the spectral resampler (i.e change the binning of a spectrum)
     function make_bins(λ)
         length(λ) < 2 && throw(ArgumentError("Spectral Resampler requires ≥ 2 wavelength points, got $(length(λ))"))
         edges = zeros(Float64, length(λ) + 1)
@@ -658,10 +636,10 @@ end
         start = 0
         stop = 0
         warned = false
+        supress_warning = true #supressing the warning about filling when outside the range because it dominates the console
     
         for j in 1:size(new_λ, 1)
             if (new_edges[j] < old_edges[1]) || (new_edges[j+1] > old_edges[end])
-                
                 new_fluxes[j] = fill
     
                 if old_errs !== nothing
@@ -670,7 +648,9 @@ end
     
                 if (j == 1 || j == size(new_λ, 1)) && verbose && !warned
                     warned = true
-                    #println("New_λ contains values outside the range in spec_λ, new_fluxes and new_errs will be filled with the value set in the 'fill' keyword argument. \n")
+                    if supress_warning == false
+                        println("New_λ contains values outside the range in spec_λ, new_fluxes and new_errs will be filled with the value set in the 'fill' keyword argument. \n")
+                    end
                 end
                 continue
             end
@@ -720,8 +700,7 @@ end
         end
     end
 
-    #------------------- Remove Tellurics -------------------
-
+    #Mask out any tellurics in the input spectrum before the main fitting
     function remove_tellurics(telluric_λ, input_spectra_λ, input_spectra, input_spectra_σ)
         original_spectra = deepcopy(input_spectra)
         original_spectra_λ = deepcopy(input_spectra_λ)
@@ -734,7 +713,6 @@ end
             start = telluric_λ[i]
             stop = telluric_λ[i+1]
             region_mask = ((input_spectra_λ .> start) .& (input_spectra_λ .< stop))
-
 
             region_indices = findall(region_mask)
             
@@ -751,22 +729,17 @@ end
 
         tellurics = .!mask
 
-        #input_spectra = input_spectra[mask]
-        #input_spectra_σ = input_spectra_σ[mask]
-        #input_spectra_λ = input_spectra_λ[mask]
-
         input_spectra[tellurics] .= NaN
         input_spectra_σ[tellurics] .= NaN
         input_spectra_λ[tellurics] .= NaN
     
-
-
         telluric_mask = original_spectra_λ[tellurics]
         plotting_telluric = original_spectra[tellurics]
 
         return input_spectra_λ, input_spectra, input_spectra_σ,  telluric_mask, plotting_telluric
     end
-    #------------------- Remove Galaxy Features -------------------
+
+    #Remove any emission lines present within the spectrum which are a result of the host galaxy
     function remove_emission_lines(input_spectra_λ, input_spectra, input_spectra_σ, window_size, σ)
 
         original_spectra   = deepcopy(input_spectra)
@@ -823,8 +796,9 @@ end
         return input_spectra_λ[missing_indices], input_spectra[missing_indices],
             output_spectra_λ, output_spectra, output_spectra_σ
     end
-    #------------------- Pre - Process Spectra -------------------
 
+
+    #Apply the telluric and emission line removal
     function process_spectra(input_spectra_λ, input_spectra, input_spectra_σ, telluric_λ, remove_telluric)
         if remove_telluric == "Y" || remove_telluric == "y" || remove_telluric == "Yes" || remove_telluric == "yes" || remove_telluric == " Y" || remove_telluric == " y" || remove_telluric == " Yes" || remove_telluric == " yes"
             # Remove telluric featues from the spectra
@@ -861,7 +835,7 @@ end
     function redshift_spectra(input_spectra_λ, input_spectra, input_spectra_σ, input_transient_templates, input_transient_λ, 
         transient_metadata, transient_file_names, input_host_templates, redshift,  input_host_λ, original_spectra_λ)
 
-        # Redshift the target spectra to rest wavelength
+        # De-Redshift the target spectra to rest wavelength, this is computationally less expensive than redshifting all the templates
         de_redshifted_λ = original_spectra_λ ./ (1 + redshift)
 
         #full_template_λ_range is the full range of the templates, when deredshifting the spectrum, you can probe the bluer template ends  up to 2315 Å 
@@ -876,8 +850,6 @@ end
         top_λ = 8000 / (1 + redshift)
         top_λ = find_closest_value(full_template_λ_range, top_λ)
         full_template_λ = collect(bottom_λ:15:top_λ)
-
-
     
         # Trim and rebin the spectra to fit to the wavelength range of the templates
         output_spectra, output_spectra_σ = spectral_resampler(
@@ -890,8 +862,6 @@ end
         binned_spectra = copy(output_spectra)
         binned_spectra_σ = copy(output_spectra_σ)
         binned_spectra_λ = copy(full_template_λ)
-
-
 
         output_spectra, output_spectra_σ, output_spectra_λ= trim_nans(
             output_spectra, 
@@ -916,7 +886,7 @@ end
 
         # Trim the templates to the same wavelength range as the target spectra
         # Trim standard templates to the common wavelength range.
-        # Non-standard templates are left at their original wavelengths —
+        # Non-standard templates are left at their original wavelengths
         # the classifier handles their trimming individually per target spectrum.
         output_transient_templates = Vector{Vector{Float64}}(undef, length(input_transient_templates))
         for i in eachindex(input_transient_templates)
@@ -947,9 +917,8 @@ end
     end
 
 
-    #------------------- Find the best fit parameters -----------------------------
     #These functions calculate the best fit parameters from the B and C parameters described in the SIREN paper
-    #As of August 2025, this paper is my first year phd report lol
+    #As of October 2026, this paper is my first year phd report lol
     function calculate_B(F_obs, F_SN, F_HG, sigma)
         numerator = sum(((F_SN .* F_obs)./sigma.^2) .- ((F_HG .* F_SN ./ sigma.^2).*(sum(F_HG .* F_obs ./ sigma.^2) / sum(F_HG.^2 ./ sigma.^2))))
         denominator = sum((F_SN.^2 ./ sigma.^2)  .- (F_HG.* F_SN ./ sigma.^2).* (sum(F_HG .* F_SN ./ sigma.^2) / sum(F_HG.^2 ./ sigma.^2)))
@@ -964,7 +933,7 @@ end
         return C
     end
 
-    #------------------- Chi Squared Classifier -------------------
+#This is where the "magic" happens and brings everything together
 function chi_squared_classifier(
         transient_template_info, transient_template_names, transient_template_files,
         host_template_info,      host_template_names,      host_template_files,
@@ -979,7 +948,7 @@ function chi_squared_classifier(
 
     use_prebuilt = !isnothing(T_master)
 
-    # ── Upload static master matrices to GPU once ─────────────────────────────
+    #Start with the prebuilt templates in matrices form to pass to gpu
     if use_prebuilt
         T_master_gpu  = to_gpu(T_master)
         MT_master_gpu = to_gpu(MT_master)
@@ -989,6 +958,8 @@ function chi_squared_classifier(
 
     n_transient_templates = length(transient_template_names)
     n_host_templates      = length(host_template_names)
+
+    #Here we're preparing a lot of dummy arrays to start populating with SIREN best fitting results, getting the number of types etc
 
     unique_types  = unique(values(transient_template_info["Type"]))
     n_types       = length(unique_types)
@@ -1025,20 +996,20 @@ function chi_squared_classifier(
     working_λ      = deepcopy(target_λ)
     original_λ     = deepcopy(target_λ)
 
+    #Remove emission lines and host gal emission lines
     cleaned_λ, cleaned_flux, cleaned_flux_σ, telluric_λ, emission_line_λ, emission_line = process_spectra(
-        working_λ, working_flux, working_flux_σ, telluric_λ, remove_telluric
-    )
+        working_λ, working_flux, working_flux_σ, telluric_λ, remove_telluric)
 
     original_target_λ      = deepcopy(working_λ)
     original_target_flux   = deepcopy(working_flux)
     original_target_flux_σ = deepcopy(working_flux_σ)
 
-    # ── Extinction grid ───────────────────────────────────────────────────────
+    # Define an extinction grid to fit for
     Av_grid = collect(Av_min:Av_step:Av_max)
     N_av    = length(Av_grid)
     ext_law = F99(Rv = Rv)
 
-    # ── Pre-compute all extinction curves on the FIXED master_grid ────────────
+    # Pre-compute all extinction curves on the FIXED master_grid for speed reasons
     ext_curves_gpu = if use_prebuilt
         N_lam_master = length(master_grid)
         [to_gpu(Float32.(10.0 .^ (-0.4f0 .* Float32(Av) .* Float32.(ext_law.(master_grid)))))
@@ -1047,13 +1018,12 @@ function chi_squared_classifier(
         nothing
     end
 
+    #Define the redshift range we're fitting over
     redshift_range = collect(z_min:z_step:z_max)
     N_z = length(redshift_range)
 
-    galactic_transients = Set(
-        t_idx for t_idx in 1:n_transient_templates
-        if transient_template_info["Galactic Source"][transient_template_names[t_idx]] == "Y"
-    )
+    galactic_transients = Set(t_idx for t_idx in 1:n_transient_templates
+        if transient_template_info["Galactic Source"][transient_template_names[t_idx]] == "Y")
 
     N_T          = n_transient_templates
     N_H          = n_host_templates
@@ -1067,9 +1037,8 @@ function chi_squared_classifier(
         push!(type_groups[type_indices[t_idx]], t_idx)
     end
 
-    # ── Type constraint ───────────────────────────────────────────────────────
-    # If input_type is set, restrict the search to only templates of that type.
-    # Matching is case-insensitive. Falls back gracefully if no templates match.
+
+    # If the SN type is set, restrict the search to only templates of that type. Falls back gracefully if no templates match.
     has_type_constraint = !ismissing(input_type) &&
                           input_type != "None"   &&
                           !isempty(strip(string(input_type)))
@@ -1092,7 +1061,10 @@ function chi_squared_classifier(
         Set{Int}(1:N_T)
     end
 
-    # ── Pre-compute all target resamples across the redshift grid ─────────────
+
+    ## STOPPING HERE FOR THE DAY, REQUIRES A DEEP DEEP DIVE
+
+    # De-redshift and resample across the redshift grid
     target_f_stack     = zeros(Float32, N_lam_master, N_z)
     target_w_stack     = zeros(Float32, N_lam_master, N_z)
     target_valid_stack = falses(N_lam_master, N_z)
@@ -1106,14 +1078,12 @@ function chi_squared_classifier(
 
         de_redshifted_λ = original_λ ./ (1 + z_val)
         t_on_grid, t_σ_on_grid = spectral_resampler(
-            master_grid, de_redshifted_λ, cleaned_flux, cleaned_flux_σ
-        )
+            master_grid, de_redshifted_λ, cleaned_flux, cleaned_flux_σ)
 
         raw_flux_stack[iz]   = copy(t_on_grid)
         raw_flux_σ_stack[iz] = copy(t_σ_on_grid)
 
-        v_mask = .!isnan.(t_on_grid) .& .!isnan.(t_σ_on_grid) .&
-                 (t_σ_on_grid .> 0) .& (master_grid .>= bottom_λ) .& (master_grid .<= top_λ)
+        v_mask = .!isnan.(t_on_grid) .& .!isnan.(t_σ_on_grid) .& (t_σ_on_grid .> 0) .& (master_grid .>= bottom_λ) .& (master_grid .<= top_λ)
 
         target_f_stack[v_mask, iz] .= Float32.(t_on_grid[v_mask])
         target_w_stack[v_mask, iz] .= 1.0f0 ./ Float32.(t_σ_on_grid[v_mask]).^2
@@ -1748,7 +1718,7 @@ function bring_plot_to_front()
         run(`osascript -e 'tell application "System Events" to set frontmost of first process whose name is "GKSTerm" to true'`,
             wait = true)
     catch
-        # Window management is best-effort — silently ignore
+        # Window management is best-effort  silently ignore
     end
 end
 
