@@ -301,7 +301,7 @@ function SIREN_main()
     make_plots = true
 
     
-    #Interactive fit viewer (single target mode only)
+    #Interactive fit viewer (single target mode only) 
     if show_plots && !batch_mode && !isempty(target_spectra_names)
         n = first(target_spectra_names)
         target_name_viewer = splitext(basename(n))[1]
