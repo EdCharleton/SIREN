@@ -83,7 +83,7 @@ module ClassifierFunctions
             "--file_path", "-f"
                 help = "Path to the input data file/directory (see --batch flag)"
                 arg_type = String
-                required = true
+                default = "No Filepath Given"
             
             "--redshift", "-z"
                 help = "Redshift value (or 'None' for search)"
@@ -146,6 +146,11 @@ module ClassifierFunctions
 
             "--use_gpu"
                 help = "Flag to enable/disable GPU acceleration"
+                arg_type = Bool
+                default = false
+
+            "--version"
+                help = "Print the SIREN version"
                 arg_type = Bool
                 default = false
 

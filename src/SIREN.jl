@@ -19,8 +19,7 @@ using JLD2
 using Plots
 
 
-# ── julia_main ────────────────────────────────────────────────────────────────
-# Entry point for the compiled binary. PackageCompiler (the binary compiler) requires this signature.
+# Entry point for compiling SIREN as an exe. PackageCompiler (the binary compiler) requires this specific signature.
 function julia_main()::Cint
     try
         SIREN_main()
@@ -31,9 +30,9 @@ function julia_main()::Cint
     return 0
 end
 
-
-# ── SIREN_main ────────────────────────────────────────────────────────────────
 function SIREN_main()
+    SIREN_version = "0.1.0" #remember to update this in the package.toml too!
+
 
     #Parse in inputs from the commandline
     parsed_args            = parse_command_line_args()
@@ -52,13 +51,19 @@ function SIREN_main()
     use_gpu_flag           = parsed_args["use_gpu"] #Flag for whether or not to use a gpu
     savepath               = parsed_args["save_path"] #where to save
     meta_path              = parsed_args["metadata_path"] # where sn metadata is located
-
+    print_version          = parsed_args["version"] #flag for whether or not to display the SIREN version
 
     ClassifierFunctions.use_gpu = use_gpu_flag
+
         
     # Supress the plotting window if its in batch mode or the plotting is set to off
     if batch_mode || !show_plots
         ENV["GKSwstype"] = "nul"
+    end
+
+    if print_version == true
+        printstyled("SIREN Version: $SIREN_version\n", color=:cyan)
+        exit()
     end
 
     # ── Template metadata ─────────────────────────────────────────────────────
@@ -350,6 +355,6 @@ function SIREN_main()
     println("----------------------------------------------")
     end
 end
-
 end
-SIREN.julia_main() #Needs commenting out when running through the package compiler and uncommented when run out of the Julia REPL 
+
+#SIREN.julia_main() #Needs commenting out when running through the package compiler and uncommented when run out of the Julia REPL 
