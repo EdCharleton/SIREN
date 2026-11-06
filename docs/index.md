@@ -1,6 +1,6 @@
 # SIREN Documentation
 
-Welcome to the SIREN. Documentation still under construction 🚧 🛠️
+Welcome to the SIREN. Documentation has partially been written, but is still under construction 🚧 🛠️
 
 
 ```{toctree}

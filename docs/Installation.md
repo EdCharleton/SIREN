@@ -7,6 +7,6 @@ SIREN is compiled as a binary file, meaning there should be no environmental dep
 # 1. Download the zip file
 curl -L -o SIREN_MACOS.zip "https://github.com/EdCharleton/SIREN/releases/download/v0.1.0/SIREN_MACOS.zip"
 
-# 2. Extract the contents (this may take a little while)
-tar -xf SIREN_MACOS_zip
+# 2. Extract the contents with your chosen unzipper (due to the system image, using unzip SIREN_MACOS.zip results in a very verbose terminal output)
+tar -xf SIREN_MACOS.zip
 
