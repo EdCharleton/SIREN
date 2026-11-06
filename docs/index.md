@@ -7,8 +7,8 @@ Welcome to the SIREN. Documentation still under construction 🚧 🛠️
 :maxdepth: 2
 :caption: Contents:
 
-installation
-how-to-use
+Installation
+Instructions-and_Examples
 templates
-faq
+faqs
 ```
