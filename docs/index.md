@@ -1,11 +1,9 @@
 # SIREN Documentation
 
-Welcome to the Supernova Identification and Redshift ENgine.
+Welcome to the SIREN. Documentation still under construction 🚧 🛠️
 
-## Installation
-Hello World
 
-{toctree}
+```{toctree}
 :maxdepth: 2
 :caption: Contents:
 
@@ -13,3 +11,4 @@ installation
 how-to-use
 templates
 faq
+```
