@@ -1,5 +1,5 @@
 project = 'SIREN'
-copyright = '2026, Edward Charleton'
+copyright = 'The Authors'
 author = 'Ed Charleton'
 release = '0.1.0'
 
